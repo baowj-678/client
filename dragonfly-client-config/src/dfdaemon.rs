@@ -357,6 +357,47 @@ impl Default for Host {
     }
 }
 
+/// default_dfdaemon_config_path is the default config path for dfdaemon.
+#[inline]
+pub fn default_hosts() -> Vec<HostStatus> {
+    Vec::new()
+}
+
+// for demo
+#[derive(Debug, Clone, Validate, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct HostStatus {
+    pub host_ip: IpAddr,
+    pub bandwidth: u32,
+}
+
+/// HostStatus implements Default.
+impl Default for HostStatus {
+    fn default() -> Self {
+        Self {
+            host_ip: "0.0.0.0".parse().unwrap(),
+            bandwidth: 0,
+        }
+    }
+}
+
+// for demo
+#[derive(Debug, Clone, Validate, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct HostsStatus {
+    #[serde(default = "default_hosts")]
+    pub hosts: Vec<HostStatus>,
+}
+
+/// HostsStatus implements Default.
+impl Default for HostsStatus {
+    fn default() -> Self {
+        Self {
+            hosts: Vec::new(),
+        }
+    }
+}
+
 /// Server is the server configuration for dfdaemon.
 #[derive(Debug, Clone, Validate, Deserialize)]
 #[serde(default, rename_all = "camelCase")]

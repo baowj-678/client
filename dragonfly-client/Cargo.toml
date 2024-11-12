@@ -90,6 +90,8 @@ futures-util = "0.3.30"
 termion = "4.0.3"
 tabled = "0.16.0"
 path-absolutize = "3.1.1"
+crossbeam-queue = "0.3.11"
+rand = "0.8.5"
 
 [dev-dependencies]
 tempfile.workspace = true

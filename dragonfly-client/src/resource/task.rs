@@ -52,10 +52,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tokio::sync::{
-    mpsc::{self, Sender},
-    Semaphore,
-};
+use tokio::sync::{mpsc::{self, Sender}, OwnedSemaphorePermit, Semaphore, SemaphorePermit};
 use tokio::task::JoinSet;
 use tokio::time::sleep;
 use tokio_stream::{wrappers::ReceiverStream, StreamExt};
@@ -908,7 +905,7 @@ impl Task {
         in_stream_tx: Sender<AnnouncePeerRequest>,
     ) -> ClientResult<Vec<metadata::Piece>> {
         // Initialize the piece collector.
-        let piece_collector = piece_collector::PieceCollector::new(
+        let mut piece_collector = piece_collector::PieceCollector::new(
             self.config.clone(),
             host_id,
             task.id.as_str(),
@@ -922,7 +919,7 @@ impl Task {
                 })
                 .collect(),
         );
-        let mut piece_collector_rx = piece_collector.run().await;
+        piece_collector.run().await;
 
         // Initialize the interrupt. If download from remote peer failed with scheduler or download
         // progress, interrupt the collector and return the finished pieces.
@@ -938,11 +935,10 @@ impl Task {
         ));
 
         // Download the pieces from the remote peers.
-        while let Some(collect_piece) = piece_collector_rx.recv().await {
+        while let Some(collect_piece) = piece_collector.next_piece().await {
             if interrupt.load(Ordering::SeqCst) {
                 // If the interrupt is true, break the collector loop.
                 info!("interrupt the piece collector");
-                drop(piece_collector_rx);
                 break;
             }
 
@@ -955,15 +951,12 @@ impl Task {
                 parent: piece_collector::CollectedParent,
                 piece_manager: Arc<piece::Piece>,
                 storage: Arc<Storage>,
-                semaphore: Arc<Semaphore>,
+                permit: Arc<OwnedSemaphorePermit>,
                 download_progress_tx: Sender<Result<DownloadTaskResponse, Status>>,
                 in_stream_tx: Sender<AnnouncePeerRequest>,
                 interrupt: Arc<AtomicBool>,
                 finished_pieces: Arc<Mutex<Vec<metadata::Piece>>>,
             ) -> ClientResult<metadata::Piece> {
-                // Limit the concurrent piece count.
-                let _permit = semaphore.acquire().await.unwrap();
-
                 info!(
                     "start to download piece {} from remote peer {:?}",
                     storage.piece_id(task_id.as_str(), number),
@@ -1070,8 +1063,11 @@ impl Task {
                 let mut finished_pieces = finished_pieces.lock().unwrap();
                 finished_pieces.push(metadata.clone());
 
+                drop(permit);
                 Ok(metadata)
             }
+
+            let permit = semaphore.clone().acquire_owned().await.unwrap();
 
             join_set.spawn(
                 download_from_remote_peer(
@@ -1083,7 +1079,7 @@ impl Task {
                     collect_piece.parent.clone(),
                     self.piece.clone(),
                     self.storage.clone(),
-                    semaphore.clone(),
+                    permit,
                     download_progress_tx.clone(),
                     in_stream_tx.clone(),
                     interrupt.clone(),
