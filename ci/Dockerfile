@@ -34,6 +34,7 @@ COPY dragonfly-client-init/Cargo.toml ./dragonfly-client-init/Cargo.toml
 COPY dragonfly-client-init/src ./dragonfly-client-init/src
 
 RUN cargo build --release --verbose --bin dfget --bin dfdaemon --bin dfstore --bin dfcache
+RUN cargo build --release --verbose --bin dfget --bin dfdaemon
 
 FROM alpine:3.20 AS health
 

@@ -52,16 +52,13 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tokio::sync::{
-    mpsc::{self, Sender},
-    Semaphore,
-};
+use tokio::sync::{mpsc::{self, Sender}, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinSet;
 use tokio::time::sleep;
 use tokio_stream::{wrappers::ReceiverStream, StreamExt};
 use tonic::{Request, Status};
 use tracing::{error, info, instrument, Instrument};
-
+use crate::resource::parent_status_syncer::ParentStatusSyncer;
 use super::*;
 
 /// Task represents a task manager.
@@ -83,6 +80,8 @@ pub struct Task {
 
     /// piece is the piece manager.
     pub piece: Arc<piece::Piece>,
+    
+    parent_status_syncer: Arc<ParentStatusSyncer>,
 }
 
 /// Task implements the task manager.
@@ -95,6 +94,7 @@ impl Task {
         storage: Arc<Storage>,
         scheduler_client: Arc<SchedulerClient>,
         backend_factory: Arc<BackendFactory>,
+        parent_status_syncer: Arc<ParentStatusSyncer>,
     ) -> Self {
         let piece = piece::Piece::new(
             config.clone(),
@@ -111,6 +111,7 @@ impl Task {
             scheduler_client: scheduler_client.clone(),
             backend_factory: backend_factory.clone(),
             piece: piece.clone(),
+            parent_status_syncer: parent_status_syncer.clone(),
         }
     }
 
@@ -908,7 +909,7 @@ impl Task {
         in_stream_tx: Sender<AnnouncePeerRequest>,
     ) -> ClientResult<Vec<metadata::Piece>> {
         // Initialize the piece collector.
-        let piece_collector = piece_collector::PieceCollector::new(
+        let mut piece_collector = piece_collector::PieceCollector::new(
             self.config.clone(),
             host_id,
             task.id.as_str(),
@@ -921,8 +922,9 @@ impl Task {
                     host: peer.host.clone(),
                 })
                 .collect(),
+            self.parent_status_syncer.clone(),
         );
-        let mut piece_collector_rx = piece_collector.run().await;
+        piece_collector.run().await;
 
         // Initialize the interrupt. If download from remote peer failed with scheduler or download
         // progress, interrupt the collector and return the finished pieces.
@@ -938,11 +940,12 @@ impl Task {
         ));
 
         // Download the pieces from the remote peers.
-        while let Some(collect_piece) = piece_collector_rx.recv().await {
+        while interested_pieces.len() > piece_collector.collected_pieces_num() {
+            let collect_piece =  tokio::task::block_in_place(||piece_collector.next_piece());
+            info!("[baowj] download piece {}, parent: {}", collect_piece.number, collect_piece.parent.host.clone().unwrap().ip);
             if interrupt.load(Ordering::SeqCst) {
                 // If the interrupt is true, break the collector loop.
                 info!("interrupt the piece collector");
-                drop(piece_collector_rx);
                 break;
             }
 
@@ -955,15 +958,12 @@ impl Task {
                 parent: piece_collector::CollectedParent,
                 piece_manager: Arc<piece::Piece>,
                 storage: Arc<Storage>,
-                semaphore: Arc<Semaphore>,
+                permit: Arc<OwnedSemaphorePermit>,
                 download_progress_tx: Sender<Result<DownloadTaskResponse, Status>>,
                 in_stream_tx: Sender<AnnouncePeerRequest>,
                 interrupt: Arc<AtomicBool>,
                 finished_pieces: Arc<Mutex<Vec<metadata::Piece>>>,
             ) -> ClientResult<metadata::Piece> {
-                // Limit the concurrent piece count.
-                let _permit = semaphore.acquire().await.unwrap();
-
                 info!(
                     "start to download piece {} from remote peer {:?}",
                     storage.piece_id(task_id.as_str(), number),
@@ -1066,12 +1066,15 @@ impl Task {
                     storage.piece_id(task_id.as_str(), metadata.number),
                     metadata.parent_id
                 );
-
+                
                 let mut finished_pieces = finished_pieces.lock().unwrap();
                 finished_pieces.push(metadata.clone());
 
+                drop(permit);
                 Ok(metadata)
             }
+
+            let permit = semaphore.clone().acquire_owned().await.unwrap();
 
             join_set.spawn(
                 download_from_remote_peer(
@@ -1083,7 +1086,7 @@ impl Task {
                     collect_piece.parent.clone(),
                     self.piece.clone(),
                     self.storage.clone(),
-                    semaphore.clone(),
+                    permit.into(),
                     download_progress_tx.clone(),
                     in_stream_tx.clone(),
                     interrupt.clone(),
@@ -1092,7 +1095,7 @@ impl Task {
                 .in_current_span(),
             );
         }
-
+        
         // Wait for the pieces to be downloaded.
         while let Some(message) = join_set
             .join_next()
@@ -1144,6 +1147,7 @@ impl Task {
                     // It will stop the download from the remote peer with scheduler
                     // and download from the source directly from middle.
                     let finished_pieces = finished_pieces.lock().unwrap().clone();
+                    piece_collector.stop();
                     return Ok(finished_pieces);
                 }
                 Err(err) => {
@@ -1155,7 +1159,8 @@ impl Task {
                 }
             }
         }
-
+        info!("[baowj] finish download all piece");
+        piece_collector.stop();
         let finished_pieces = finished_pieces.lock().unwrap().clone();
         Ok(finished_pieces)
     }

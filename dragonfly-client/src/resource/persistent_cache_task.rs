@@ -46,16 +46,13 @@ use dragonfly_client_util::id_generator::IDGenerator;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{
-    mpsc::{self, Sender},
-    Semaphore,
-};
+use tokio::sync::{mpsc::{self, Sender}, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinSet;
 use tokio::time::sleep;
 use tokio_stream::{wrappers::ReceiverStream, StreamExt};
 use tonic::{Request, Status};
 use tracing::{error, info, instrument, Instrument};
-
+use crate::resource::parent_status_syncer::ParentStatusSyncer;
 use super::*;
 
 /// PersistentCacheTask represents a persistent cache task manager.
@@ -74,6 +71,8 @@ pub struct PersistentCacheTask {
 
     /// piece is the piece manager.
     pub piece: Arc<piece::Piece>,
+    
+    parent_status_syncer: Arc<ParentStatusSyncer>,
 }
 
 /// PersistentCacheTask is the implementation of PersistentCacheTask.
@@ -86,6 +85,7 @@ impl PersistentCacheTask {
         storage: Arc<Storage>,
         scheduler_client: Arc<SchedulerClient>,
         backend_factory: Arc<BackendFactory>,
+        parent_status_syncer: Arc<ParentStatusSyncer>,
     ) -> Self {
         let piece = piece::Piece::new(
             config.clone(),
@@ -101,6 +101,7 @@ impl PersistentCacheTask {
             storage,
             scheduler_client,
             piece: piece.clone(),
+            parent_status_syncer: parent_status_syncer.clone(),
         }
     }
 
@@ -801,7 +802,7 @@ impl PersistentCacheTask {
         in_stream_tx: Sender<AnnouncePersistentCachePeerRequest>,
     ) -> ClientResult<Vec<metadata::Piece>> {
         // Initialize the piece collector.
-        let piece_collector = piece_collector::PieceCollector::new(
+        let mut piece_collector = piece_collector::PieceCollector::new(
             self.config.clone(),
             host_id,
             task.id.as_str(),
@@ -814,8 +815,9 @@ impl PersistentCacheTask {
                     host: peer.host.clone(),
                 })
                 .collect(),
+            self.parent_status_syncer.clone(),
         );
-        let mut piece_collector_rx = piece_collector.run().await;
+        piece_collector.run().await;
 
         // Initialize the join set.
         let mut join_set = JoinSet::new();
@@ -824,7 +826,8 @@ impl PersistentCacheTask {
         ));
 
         // Download the pieces from the remote peers.
-        while let Some(collect_piece) = piece_collector_rx.recv().await {
+        while interested_pieces.len() > piece_collector.collected_pieces_num() {
+            let collect_piece = tokio::task::block_in_place(||piece_collector.next_piece());
             async fn download_from_remote_peer(
                 task_id: String,
                 host_id: String,
@@ -834,13 +837,10 @@ impl PersistentCacheTask {
                 parent: piece_collector::CollectedParent,
                 piece_manager: Arc<super::piece::Piece>,
                 storage: Arc<Storage>,
-                semaphore: Arc<Semaphore>,
+                permit: Arc<OwnedSemaphorePermit>,
                 download_progress_tx: Sender<Result<DownloadPersistentCacheTaskResponse, Status>>,
                 in_stream_tx: Sender<AnnouncePersistentCachePeerRequest>,
             ) -> ClientResult<metadata::Piece> {
-                // Limit the concurrent download count.
-                let _permit = semaphore.acquire().await.unwrap();
-
                 info!(
                     "start to download piece {} from remote peer {:?}",
                     storage.piece_id(task_id.as_str(), number),
@@ -933,9 +933,10 @@ impl PersistentCacheTask {
                     storage.piece_id(task_id.as_str(), metadata.number),
                     metadata.parent_id
                 );
-
+                drop(permit);
                 Ok(metadata)
             }
+            let permit = semaphore.clone().acquire_owned().await.unwrap();
 
             join_set.spawn(
                 download_from_remote_peer(
@@ -947,7 +948,7 @@ impl PersistentCacheTask {
                     collect_piece.parent.clone(),
                     self.piece.clone(),
                     self.storage.clone(),
-                    semaphore.clone(),
+                    permit.into(),
                     download_progress_tx.clone(),
                     in_stream_tx.clone(),
                 )

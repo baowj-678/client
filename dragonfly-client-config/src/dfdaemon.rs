@@ -357,6 +357,69 @@ impl Default for Host {
     }
 }
 
+/// default_dfdaemon_config_path is the default config path for dfdaemon.
+#[inline]
+pub fn default_hosts() -> Vec<HostStatus> {
+    Vec::new()
+}
+
+// for demo
+#[derive(Debug, Clone, Validate, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct HostStatus {
+    pub ip: IpAddr,
+    pub port: u16,
+    pub bandwidth: u32,
+}
+
+/// HostStatus implements Default.
+impl Default for HostStatus {
+    fn default() -> Self {
+        Self {
+            ip: "0.0.0.0".parse().unwrap(),
+            port: 4000,
+            bandwidth: 0,
+        }
+    }
+}
+
+// for demo
+#[derive(Debug, Clone, Validate, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ParentSelector {
+    #[serde(default = "default_hosts")]
+    pub hosts: Vec<HostStatus>,
+    
+    pub enable: bool,
+    
+    pub server_enable: bool,
+    
+    pub syncer_enable: bool,
+
+    #[serde(
+        with = "humantime_serde"
+    )]
+    pub interval: Duration,
+
+    /// received_limit is the rate limit of the received speed in GiB/Mib/Kib per second.
+    #[serde(with = "bytesize_serde")]
+    pub transmitted_limit: ByteSize,
+}
+
+/// HostsStatus implements Default.
+impl Default for ParentSelector {
+    fn default() -> Self {
+        Self {
+            hosts: Vec::new(),
+            enable: true,
+            server_enable: false,
+            syncer_enable: false,
+            interval: Duration::from_secs(1),
+            transmitted_limit: ByteSize::gib(1),
+        }
+    }
+}
+
 /// Server is the server configuration for dfdaemon.
 #[derive(Debug, Clone, Validate, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -1289,6 +1352,9 @@ pub struct Config {
     /// network is the network configuration for dfdaemon.
     #[validate]
     pub network: Network,
+
+    #[validate]
+    pub parent_selector: ParentSelector,
 }
 
 /// Config implements the config operation of dfdaemon.

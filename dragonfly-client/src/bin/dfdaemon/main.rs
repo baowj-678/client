@@ -25,7 +25,10 @@ use dragonfly_client::grpc::{
 use dragonfly_client::health::Health;
 use dragonfly_client::metrics::Metrics;
 use dragonfly_client::proxy::Proxy;
-use dragonfly_client::resource::{persistent_cache_task::PersistentCacheTask, task::Task};
+use dragonfly_client::resource::{persistent_cache_task::PersistentCacheTask, 
+                                 task::Task, 
+                                 parent_status_syncer::ParentStatusSyncer, 
+                                 parent_status_server::ParentStatusServer};
 use dragonfly_client::shutdown;
 use dragonfly_client::stats::Stats;
 use dragonfly_client::tracing::init_tracing;
@@ -116,7 +119,8 @@ async fn main() -> Result<(), anyhow::Error> {
     // Load config.
     let config = dfdaemon::Config::load(&args.config).await?;
     let config = Arc::new(config);
-
+    println!("配置文件: {:?}", config);
+    
     // Initialize tracing.
     let _guards = init_tracing(
         dfdaemon::NAME,
@@ -188,6 +192,17 @@ async fn main() -> Result<(), anyhow::Error> {
             err
         })?;
     let backend_factory = Arc::new(backend_factory);
+    
+    // 创建syncer
+    let parent_status_syncer = ParentStatusSyncer::new(
+        config.clone(),
+        id_generator.clone(),
+    );
+    let parent_status_syncer = Arc::new(parent_status_syncer);
+    
+    // 创建server
+    let parent_status_server = ParentStatusServer::new(config.clone()).unwrap();
+    let parent_status_server = Arc::new(parent_status_server);
 
     // Initialize task manager.
     let task = Task::new(
@@ -196,6 +211,7 @@ async fn main() -> Result<(), anyhow::Error> {
         storage.clone(),
         scheduler_client.clone(),
         backend_factory.clone(),
+        parent_status_syncer.clone(),
     );
     let task = Arc::new(task);
 
@@ -206,6 +222,7 @@ async fn main() -> Result<(), anyhow::Error> {
         storage.clone(),
         scheduler_client.clone(),
         backend_factory.clone(),
+        parent_status_syncer.clone(),
     );
     let persistent_cache_task = Arc::new(persistent_cache_task);
 
@@ -266,6 +283,7 @@ async fn main() -> Result<(), anyhow::Error> {
         SocketAddr::new(config.upload.server.ip.unwrap(), config.upload.server.port),
         task.clone(),
         persistent_cache_task.clone(),
+        parent_status_server.clone(),
         shutdown.clone(),
         shutdown_complete_tx.clone(),
     );
@@ -332,6 +350,14 @@ async fn main() -> Result<(), anyhow::Error> {
 
         _ = tokio::spawn(async move { gc.run().await }) => {
             info!("garbage collector exited");
+        },
+        
+        _ = tokio::spawn(async move { parent_status_syncer.run().await }) => {
+            info!("parent status syncer exited");
+        },
+        
+        _ = tokio::spawn(async move { parent_status_server.run().await }) => {
+            info!("parent status server exited");
         },
 
         _ = shutdown::shutdown_signal() => {},
