@@ -87,7 +87,7 @@ pub struct PieceCollector {
 
     collector: HostStatusCollector,
 
-    next_idx: u32,
+    next_idx: usize,
 
     rng: rand
 }
@@ -325,9 +325,9 @@ impl PieceCollector {
             if find {
                 break;
             } else {
-                let parent: CollectedParent = self.parents[self.next_idx];
+                let parent: CollectedParent = self.parents[self.next_idx].clone();
                 queue = self.waited_pieces.get(&parent.host.clone().unwrap().ip.clone()).unwrap();
-                self.next_idx = (self.next_idx + 1) % self.parents.len().try_into();
+                self.next_idx = (self.next_idx + 1) % self.parents.len();
                 if self.next_idx == start_idx {
                     thread::sleep(Duration::from_millis(100));
                 }

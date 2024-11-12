@@ -6,13 +6,11 @@ pub struct HostStatusCollector {
 }
 
 impl HostStatusCollector {
-    fn new() -> HostStatusCollector {
-        HostStatusCollector{status: HashMap::new()}
-    }
-
-    pub fn init_status(&mut self, host_status: HostsStatus) {
-        host_status.hosts.iter().for_each(|host|
-            {self.status.insert(host.host_ip.to_string(), host.bandwidth);})
+    pub fn new(host_status: Vec<HostStatus>) -> HostStatusCollector {
+        let mut s: HashMap<String, u32> = HashMap::new();
+        host_status.iter().for_each(|host|
+            {s.insert(host.host_ip.to_string(), host.bandwidth);});
+        HostStatusCollector{status: s}
     }
 
     pub fn get_host_status(&self, host: String) -> u32 {

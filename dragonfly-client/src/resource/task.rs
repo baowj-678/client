@@ -58,7 +58,7 @@ use tokio::time::sleep;
 use tokio_stream::{wrappers::ReceiverStream, StreamExt};
 use tonic::{Request, Status};
 use tracing::{error, info, instrument, Instrument};
-
+use crate::resource::host_status::HostStatusCollector;
 use super::*;
 
 /// Task represents a task manager.
@@ -918,6 +918,7 @@ impl Task {
                     host: peer.host.clone(),
                 })
                 .collect(),
+            HostStatusCollector::new(self.config.status.hosts.clone()),
         );
         piece_collector.run().await;
 
@@ -935,7 +936,7 @@ impl Task {
         ));
 
         // Download the pieces from the remote peers.
-        while let Some(collect_piece) = piece_collector.next_piece().await {
+        while let Some(collect_piece) = piece_collector.next_piece() {
             if interrupt.load(Ordering::SeqCst) {
                 // If the interrupt is true, break the collector loop.
                 info!("interrupt the piece collector");
@@ -1079,7 +1080,7 @@ impl Task {
                     collect_piece.parent.clone(),
                     self.piece.clone(),
                     self.storage.clone(),
-                    permit,
+                    permit.into(),
                     download_progress_tx.clone(),
                     in_stream_tx.clone(),
                     interrupt.clone(),

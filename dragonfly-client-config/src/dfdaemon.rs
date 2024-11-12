@@ -1330,6 +1330,9 @@ pub struct Config {
     /// network is the network configuration for dfdaemon.
     #[validate]
     pub network: Network,
+
+    #[validate]
+    pub status: HostsStatus,
 }
 
 /// Config implements the config operation of dfdaemon.
