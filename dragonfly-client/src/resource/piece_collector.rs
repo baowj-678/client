@@ -33,7 +33,8 @@ use crossbeam_queue::SegQueue;
 use std::thread;
 use std::time::Duration;
 // use openssl::rand;
-use rand::Rng;
+use rand::{Rng, SeedableRng};
+use rand::rngs::StdRng;
 use crate::metrics::collect_backend_request_failure_metrics;
 use crate::resource::host_status::HostStatusCollector;
 
@@ -89,7 +90,7 @@ pub struct PieceCollector {
 
     next_idx: usize,
 
-    rng: rand::rngs::ThreadRng,
+    rng: rand::rngs::StdRng,
 }
 
 impl PieceCollector {
@@ -109,7 +110,8 @@ impl PieceCollector {
             waited_pieces.insert(parent.id.clone(), SegQueue::new());
         }
         let parents_status = Vec::new();
-        let mut rng = rand::thread_rng();
+        let seed: u64 = 42;
+        let mut rng = StdRng::seed_from_u64(seed);
 
         Self {
             config,
