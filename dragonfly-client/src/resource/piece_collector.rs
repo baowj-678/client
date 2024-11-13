@@ -83,7 +83,7 @@ pub struct PieceCollector {
     collected_pieces: Arc<DashSet<u32>>,
 
     // collected_parent id -> collected_pieces
-    waited_pieces: Arc<HashMap<String, SegQueue<CollectedPiece>>>,
+    waited_pieces: Arc<DashMap<String, SegQueue<CollectedPiece>>>,
 
     collector: HostStatusCollector,
 
@@ -104,9 +104,9 @@ impl PieceCollector {
         collector: HostStatusCollector,
     ) -> Self {
         let collected_pieces = Arc::new(DashSet::new());
-        let mut waited_pieces: Arc<HashMap<String, SegQueue<CollectedPiece>>> = Arc::new(HashMap::new());
-        while let Some(&parent) = parents.iter().next() {
-            waited_pieces.insert(parent.id, SegQueue::new());
+        let mut waited_pieces: Arc<DashMap<String, SegQueue<CollectedPiece>>> = Arc::new(DashMap::new());
+        while let Some(parent) = parents.iter().next() {
+            waited_pieces.insert(parent.id.clone(), SegQueue::new());
         }
         let parents_status = Vec::new();
         let mut rng = rand::thread_rng();
@@ -168,7 +168,7 @@ impl PieceCollector {
         parents: Vec<CollectedParent>,
         interested_pieces: Vec<metadata::Piece>,
         collected_pieces: Arc<DashSet<u32>>,
-        waited_pieces: Arc<HashMap<String, SegQueue<CollectedPiece>>>,
+        waited_pieces: Arc<DashMap<String, SegQueue<CollectedPiece>>>,
         collected_piece_timeout: Duration,
     ) -> Result<()> {
         // Create a task to collect pieces from peers.
@@ -182,7 +182,7 @@ impl PieceCollector {
                 parent: CollectedParent,
                 parents: Vec<CollectedParent>,
                 interested_pieces: Vec<metadata::Piece>,
-                waited_pieces: Arc<HashMap<String, SegQueue<CollectedPiece>>>,
+                waited_pieces: Arc<DashMap<String, SegQueue<CollectedPiece>>>,
                 collected_piece_timeout: Duration,
             ) -> Result<CollectedParent> {
                 info!("sync pieces from parent {}", parent.id);
@@ -349,7 +349,7 @@ impl PieceCollector {
         self.parents_status.iter_mut().for_each(|p|*p /= sum);
     }
 
-    pub fn get_parent_ip(&self) -> String {
+    pub fn get_parent_ip(&mut self) -> String {
         /// 获取的parent id
         let random_num: f32 = self.rng.gen();
         let mut s: f32 = 0.0;
