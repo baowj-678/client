@@ -936,7 +936,7 @@ impl Task {
         ));
 
         // Download the pieces from the remote peers.
-        while let Some(collect_piece) = piece_collector.next_piece() {
+        while let collect_piece = piece_collector.next_piece() {
             if interrupt.load(Ordering::SeqCst) {
                 // If the interrupt is true, break the collector loop.
                 info!("interrupt the piece collector");

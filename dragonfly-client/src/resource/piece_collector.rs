@@ -89,7 +89,7 @@ pub struct PieceCollector {
 
     next_idx: usize,
 
-    rng: rand
+    rng: rand::rngs::ThreadRng,
 }
 
 impl PieceCollector {
@@ -249,7 +249,7 @@ impl PieceCollector {
                         parent: parent.clone(),
                     };
                     let piece_queue = waited_pieces.get(&parent.host.clone().unwrap().ip.clone());
-                    piece_queue.unwrap().push_back(new_piece);
+                    piece_queue.unwrap().push(new_piece);
                 }
 
                 Ok(parent)
@@ -338,12 +338,12 @@ impl PieceCollector {
     }
 
     fn sync_parents_status(&mut self) {
-        /// 获取状态
+        // 获取状态
         self.parents_status = Vec::new();
         self.parents.iter().for_each(|p|
             {self.parents_status.push(self.collector.get_host_status(p.host.clone().unwrap().ip.to_string()) as f32)});
 
-        /// 归一化
+        // 归一化
         let mut sum = 0.0;
         self.parents_status.iter().for_each(|p| sum += p);
         self.parents_status.iter_mut().for_each(|p|*p /= sum);
