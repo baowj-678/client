@@ -116,7 +116,8 @@ async fn main() -> Result<(), anyhow::Error> {
     // Load config.
     let config = dfdaemon::Config::load(&args.config).await?;
     let config = Arc::new(config);
-
+    println!("配置文件: {:?}", config);
+    
     // Initialize tracing.
     let _guards = init_tracing(
         dfdaemon::NAME,

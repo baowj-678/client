@@ -813,7 +813,9 @@ impl PersistentCacheTask {
                 .collect(),
             HostStatusCollector::new(self.config.status.hosts.clone()),
         );
+        println!("strat piece collector");
         piece_collector.run().await;
+        println!("finish piece collector");
 
         // Initialize the join set.
         let mut join_set = JoinSet::new();

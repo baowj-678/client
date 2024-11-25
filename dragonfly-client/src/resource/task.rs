@@ -920,7 +920,10 @@ impl Task {
                 .collect(),
             HostStatusCollector::new(self.config.status.hosts.clone()),
         );
+        println!("start piece collector");
         piece_collector.run().await;
+        println!("finished piece collector");
+        
 
         // Initialize the interrupt. If download from remote peer failed with scheduler or download
         // progress, interrupt the collector and return the finished pieces.
@@ -937,6 +940,7 @@ impl Task {
 
         // Download the pieces from the remote peers.
         while let collect_piece = piece_collector.next_piece() {
+            println!("get piece {}", collect_piece.number);
             if interrupt.load(Ordering::SeqCst) {
                 // If the interrupt is true, break the collector loop.
                 info!("interrupt the piece collector");

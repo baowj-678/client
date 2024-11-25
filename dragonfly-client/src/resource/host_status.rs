@@ -14,6 +14,10 @@ impl HostStatusCollector {
     }
 
     pub fn get_host_status(&self, host: String) -> u32 {
-        self.status.get(&host).unwrap().clone()
+        println!("status: {:?}, host: {:?}", self.status, host);
+        return match self.status.get(&host) {
+            None => 99,
+            value => *value.unwrap(),
+        }
     }
 }
