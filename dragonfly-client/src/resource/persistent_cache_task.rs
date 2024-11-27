@@ -824,7 +824,8 @@ impl PersistentCacheTask {
         ));
 
         // Download the pieces from the remote peers.
-        while let collect_piece = piece_collector.next_piece() {
+        while interested_pieces.len() > piece_collector.collected_pieces_num() {
+            let collect_piece = piece_collector.next_piece();
             async fn download_from_remote_peer(
                 task_id: String,
                 host_id: String,

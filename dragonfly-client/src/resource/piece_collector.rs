@@ -45,6 +45,7 @@ pub struct CollectedParent {
 }
 
 /// CollectedPiece is the piece collected from a peer.
+#[derive(Clone)]
 pub struct CollectedPiece {
     /// number is the piece number.
     pub number: u32,
@@ -105,9 +106,8 @@ impl PieceCollector {
         for parent in parents.iter() {
             match parent.host.clone() {
                 None => {}
-                Some(host) => {waited_pieces.insert(host.ip, SegQueue::new());}
+                Some(host) => { waited_pieces.insert(host.ip, SegQueue::new()); }
             }
-            
         }
         let parents_status = Vec::new();
         let seed: u64 = 42;
@@ -131,7 +131,7 @@ impl PieceCollector {
     /// run runs the piece collector.
     #[instrument(skip_all)]
     pub async fn run(&mut self) {
-        println!("enter PieceCollector.run()");
+        info!("[baowj] enter PieceCollector.run()");
         let config = self.config.clone();
         let host_id = self.host_id.clone();
         let task_id = self.task_id.clone();
@@ -139,12 +139,12 @@ impl PieceCollector {
         let interested_pieces = self.interested_pieces.clone();
         let collected_pieces = self.collected_pieces.clone(); 
         let waited_pieces = self.waited_pieces.clone();
-        let collected_piece_timeout = self.config.download.piece_timeout;
+        let collected_piece_timeout = self.config.download.piece_timeout.clone();
         self.sync_parents_status();
-        println!("after sync parent status");
+        info!("[baowj] after sync parent status");
         tokio::spawn(
             async move {
-                println!("enter PieceCollector.run() async move");
+                info!("[baowj] enter PieceCollector.run() async move");
                 Self::collect_from_remote_peers(
                     config,
                     host_id,
@@ -159,11 +159,11 @@ impl PieceCollector {
                 .unwrap_or_else(|err| {
                     error!("collect pieces failed: {}", err);
                 });
-                println!("leave PieceCollector.run() async move");
+                info!("[baowj] leave PieceCollector.run() async move");
             }
             .in_current_span()
         );
-        println!("leave PieceCollector.run()");
+        info!("[baowj] leave PieceCollector.run()");
     }
 
     /// collect_from_remote_peers collects pieces from remote peers.
@@ -180,7 +180,7 @@ impl PieceCollector {
         collected_piece_timeout: Duration,
     ) -> Result<()> {
         // Create a task to collect pieces from peers.
-        println!("start collect from remote peers");
+        info!("[baowj] start collect from remote peers");
         let mut join_set = JoinSet::new();
         for parent in parents.iter() {
             #[allow(clippy::too_many_arguments)]
@@ -194,14 +194,12 @@ impl PieceCollector {
                 waited_pieces: Arc<DashMap<String, SegQueue<CollectedPiece>>>,
                 collected_piece_timeout: Duration,
             ) -> Result<CollectedParent> {
-                info!("sync pieces from parent {}", parent.id);
-
                 // If candidate_parent.host is None, skip it.
                 let host = parent.host.clone().ok_or_else(|| {
                     error!("peer {:?} host is empty", parent);
                     Error::InvalidPeer(parent.id.clone())
                 })?;
-                info!("sync pieces from parent {}, {}:{}", parent.id, host.ip, host.port);
+                info!("[baowj] sync pieces from parent {}, {}:{}", parent.id, host.ip, host.port);
 
                 // Create a dfdaemon client.
                 let dfdaemon_upload_client =
@@ -260,10 +258,10 @@ impl PieceCollector {
                     };
                     match waited_pieces.get(&host.ip.clone()) {
                         None => {
-                            error!("failed to get parent queue ip: {}", host.ip.clone());
+                            error!("[baowj] failed to get parent queue ip: {}", host.ip.clone());
                         },
-                        Some(piece_queue) => {
-                            piece_queue.push(new_piece);
+                        Some(queue) => {
+                            queue.push(new_piece);
                         }
                     };
                 }
@@ -280,7 +278,7 @@ impl PieceCollector {
                     parents.clone(),
                     interested_pieces.clone(),
                     waited_pieces.clone(),
-                    collected_piece_timeout,
+                    collected_piece_timeout.clone(),
                 )
                 .in_current_span(),
             );
@@ -292,7 +290,7 @@ impl PieceCollector {
                 Ok(Ok(peer)) => {
                     info!("peer {} sync pieces finished", peer.id);
 
-                    // If all pieces are collected, abort all tasks. todo
+                    // If all pieces are collected, abort all tasks.
                     if collected_pieces.len() == interested_pieces.len() {
                         info!("all pieces are collected, abort all tasks");
                         join_set.abort_all();
@@ -306,30 +304,34 @@ impl PieceCollector {
                 }
             }
         }
-
         Ok(())
     }
 
     #[instrument(skip_all)]
     pub fn next_piece(&mut self) -> CollectedPiece {
-        let p = self.get_parent_ip();
+        let ip = self.random_parent_ip();
+        info!("[baowj] next_piece get random ip: {}", ip);
         let mut piece = CollectedPiece {
             number: 0,
             length: 0,
             parent: CollectedParent { id: "".to_string(), host: None },
         };
+        let waited_pieces = self.waited_pieces.clone();
+        let collected_pieces = self.collected_pieces.clone();
+        let mut find = false;
         
-        match self.waited_pieces.get(&p) {
+        match waited_pieces.get(&ip) {
             None => {}
             value => {
                 let queue = value.unwrap();
                 loop {
                     match queue.pop() {
                         Some(cp) => {
-                            if self.collected_pieces.contains(&cp.number) {
+                            if collected_pieces.contains(&cp.number) {
                                 continue;
                             }
-                            return cp;
+                            piece = cp;
+                            break
                         }
                         None => {
                             break;
@@ -338,18 +340,23 @@ impl PieceCollector {
                 }
             }
         }
-        let mut find = false;
+        if find {
+            collected_pieces.insert(piece.number);
+            return piece;
+        }
+        
         let start_idx = self.next_idx;
         loop {
             loop {
-                let parent: CollectedParent = self.parents[self.next_idx].clone();
-                let queue = self.waited_pieces.get(&parent.host.clone().unwrap().ip.clone()).unwrap();
+                let parent_host = self.parents[self.next_idx].host.clone();
+                let queue = waited_pieces.get(&parent_host.unwrap().ip).unwrap();
+                info!("[baowj] queue length: {:?}", &queue.len());
                 match queue.pop() {
-                    Some(p) => {
-                        if self.collected_pieces.contains(&p.number) {
+                    Some(cp) => {
+                        if collected_pieces.contains(&cp.number) {
                             continue;
                         }
-                        piece = p;
+                        piece = cp;
                         find = true;
                         break;
                     }
@@ -363,16 +370,16 @@ impl PieceCollector {
             } else {
                 self.next_idx = (self.next_idx + 1) % self.parents.len();
                 if self.next_idx == start_idx {
-                    thread::sleep(Duration::from_millis(100));
+                    info!("[baowj] sleep");
+                    thread::sleep(Duration::from_millis(500));
                 }
             }
         }
-        self.collected_pieces.insert(piece.number);
+        collected_pieces.insert(piece.number);
         piece
     }
 
     fn sync_parents_status(&mut self) {
-        println!("enter PieceCollector.sync_parents_status()");
         // 获取状态
         self.parents_status = Vec::new();
         for parent in self.parents.iter() {
@@ -383,12 +390,11 @@ impl PieceCollector {
         self.parents_status.iter().for_each(|p| sum += p);
         self.parents_status.iter_mut().for_each(|p|*p /= sum);
         
-        println!("parents: {:?}; sync parents status status: {:?}", self.parents, self.parents_status);
-        println!("leave PieceCollector.sync_parents_status()");
-        
+        info!("[baowj] parents: {:?}", self.parents);
+        info!("[baowj] sync parents status status: {:?}", self.parents_status)
     }
 
-    pub fn get_parent_ip(&mut self) -> String {
+    pub fn random_parent_ip(&mut self) -> String {
         // 获取的  parent id
         let random_num: f32 = self.rng.gen();
         let mut s: f32 = 0.0;
@@ -399,5 +405,9 @@ impl PieceCollector {
             }
         }
         self.parents[0].host.clone().unwrap().ip.clone()
+    }
+    
+    pub fn collected_pieces_num(&self) -> usize {
+        self.collected_pieces.clone().len()
     }
 }

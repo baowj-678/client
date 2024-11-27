@@ -52,7 +52,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tokio::sync::{mpsc::{self, Sender}, OwnedSemaphorePermit, Semaphore, SemaphorePermit};
+use tokio::sync::{mpsc::{self, Sender}, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinSet;
 use tokio::time::sleep;
 use tokio_stream::{wrappers::ReceiverStream, StreamExt};
@@ -920,10 +920,7 @@ impl Task {
                 .collect(),
             HostStatusCollector::new(self.config.status.hosts.clone()),
         );
-        println!("start piece collector");
         piece_collector.run().await;
-        println!("finished piece collector");
-        
 
         // Initialize the interrupt. If download from remote peer failed with scheduler or download
         // progress, interrupt the collector and return the finished pieces.
@@ -939,8 +936,12 @@ impl Task {
         ));
 
         // Download the pieces from the remote peers.
-        while let collect_piece = piece_collector.next_piece() {
-            println!("get piece {}", collect_piece.number);
+        while interested_pieces.len() > piece_collector.collected_pieces_num() {
+            info!("[baowj] intererested_pieces len: {}", interested_pieces.len());
+            info!("[baowj] collected_pieces len: {}", piece_collector.collected_pieces_num());
+            
+            let collect_piece = piece_collector.next_piece();
+            info!("download piece {}, parent: {}", collect_piece.number, collect_piece.parent.host.clone().unwrap().ip);
             if interrupt.load(Ordering::SeqCst) {
                 // If the interrupt is true, break the collector loop.
                 info!("interrupt the piece collector");
@@ -1093,7 +1094,8 @@ impl Task {
                 .in_current_span(),
             );
         }
-
+        
+        info!("[baowj] finish collect all piece");
         // Wait for the pieces to be downloaded.
         while let Some(message) = join_set
             .join_next()

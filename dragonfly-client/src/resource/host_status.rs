@@ -1,5 +1,5 @@
+use dragonfly_client_config::dfdaemon::HostStatus;
 use std::collections::HashMap;
-use dragonfly_client_config::dfdaemon::{HostStatus, HostsStatus};
 
 pub struct HostStatusCollector {
     status: HashMap<String, u32>,
