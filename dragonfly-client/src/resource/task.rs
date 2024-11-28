@@ -918,7 +918,7 @@ impl Task {
                     host: peer.host.clone(),
                 })
                 .collect(),
-            HostStatusCollector::new(self.config.status.hosts.clone()),
+            HostStatusCollector::new(self.config.host_selector.hosts.clone()),
         );
         piece_collector.run().await;
 
@@ -937,11 +937,8 @@ impl Task {
 
         // Download the pieces from the remote peers.
         while interested_pieces.len() > piece_collector.collected_pieces_num() {
-            info!("[baowj] intererested_pieces len: {}", interested_pieces.len());
-            info!("[baowj] collected_pieces len: {}", piece_collector.collected_pieces_num());
-            
-            let collect_piece = piece_collector.next_piece();
-            info!("download piece {}, parent: {}", collect_piece.number, collect_piece.parent.host.clone().unwrap().ip);
+            let collect_piece =  tokio::task::block_in_place(||piece_collector.next_piece());
+            info!("[baowj] download piece {}, parent: {}", collect_piece.number, collect_piece.parent.host.clone().unwrap().ip);
             if interrupt.load(Ordering::SeqCst) {
                 // If the interrupt is true, break the collector loop.
                 info!("interrupt the piece collector");

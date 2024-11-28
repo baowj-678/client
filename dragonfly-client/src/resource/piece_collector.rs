@@ -88,6 +88,8 @@ pub struct PieceCollector {
     next_idx: usize,
 
     rng: StdRng,
+    
+    enable_host_selection: bool,
 }
 
 impl PieceCollector {
@@ -112,6 +114,7 @@ impl PieceCollector {
         let parents_status = Vec::new();
         let seed: u64 = 42;
         let rng = StdRng::seed_from_u64(seed);
+        let enable_host_selection = config.host_selector.enable.clone();
 
         Self {
             config,
@@ -125,6 +128,7 @@ impl PieceCollector {
             collector,
             next_idx: 0,
             rng,
+            enable_host_selection,
         }
     }
 
@@ -140,7 +144,9 @@ impl PieceCollector {
         let collected_pieces = self.collected_pieces.clone(); 
         let waited_pieces = self.waited_pieces.clone();
         let collected_piece_timeout = self.config.download.piece_timeout.clone();
-        self.sync_parents_status();
+        if self.enable_host_selection {
+            self.sync_parents_status();
+        }
         info!("[baowj] after sync parent status");
         tokio::spawn(
             async move {
@@ -309,8 +315,6 @@ impl PieceCollector {
 
     #[instrument(skip_all)]
     pub fn next_piece(&mut self) -> CollectedPiece {
-        let ip = self.random_parent_ip();
-        info!("[baowj] next_piece get random ip: {}", ip);
         let mut piece = CollectedPiece {
             number: 0,
             length: 0,
@@ -320,37 +324,41 @@ impl PieceCollector {
         let collected_pieces = self.collected_pieces.clone();
         let mut find = false;
         
-        match waited_pieces.get(&ip) {
-            None => {}
-            value => {
-                let queue = value.unwrap();
-                loop {
-                    match queue.pop() {
-                        Some(cp) => {
-                            if collected_pieces.contains(&cp.number) {
-                                continue;
+        if self.enable_host_selection {
+            let ip = self.random_parent_ip();
+            info!("[baowj] next_piece get random ip: {}", ip);
+            match waited_pieces.get(&ip) {
+                None => {}
+                value => {
+                    let queue = value.unwrap();
+                    loop {
+                        match queue.pop() {
+                            Some(cp) => {
+                                if collected_pieces.contains(&cp.number) {
+                                    continue;
+                                }
+                                piece = cp;
+                                find = true;
+                                break
                             }
-                            piece = cp;
-                            break
-                        }
-                        None => {
-                            break;
+                            None => {
+                                break;
+                            }
                         }
                     }
                 }
             }
-        }
-        if find {
-            collected_pieces.insert(piece.number);
-            return piece;
+            if find {
+                collected_pieces.insert(piece.number);
+                return piece;
+            }
         }
         
         let start_idx = self.next_idx;
         loop {
+            let parent_host = self.parents[self.next_idx].host.clone();
+            let queue = waited_pieces.get(&parent_host.unwrap().ip).unwrap();
             loop {
-                let parent_host = self.parents[self.next_idx].host.clone();
-                let queue = waited_pieces.get(&parent_host.unwrap().ip).unwrap();
-                info!("[baowj] queue length: {:?}", &queue.len());
                 match queue.pop() {
                     Some(cp) => {
                         if collected_pieces.contains(&cp.number) {
@@ -401,10 +409,10 @@ impl PieceCollector {
         for (index, v) in self.parents_status.iter().enumerate() {
             s += v;
             if s >= random_num {
-                return self.parents[index].host.clone().unwrap().ip.clone()
+                return self.parents[index].host.clone().unwrap().ip
             }
         }
-        self.parents[0].host.clone().unwrap().ip.clone()
+        self.parents[0].host.clone().unwrap().ip
     }
     
     pub fn collected_pieces_num(&self) -> usize {

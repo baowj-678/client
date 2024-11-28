@@ -9,7 +9,7 @@ impl HostStatusCollector {
     pub fn new(host_status: Vec<HostStatus>) -> HostStatusCollector {
         let mut s: HashMap<String, u32> = HashMap::new();
         host_status.iter().for_each(|host|
-            {s.insert(host.host_ip.to_string(), host.bandwidth);});
+            {s.insert(host.ip.to_string(), host.bandwidth);});
         HostStatusCollector{status: s}
     }
 

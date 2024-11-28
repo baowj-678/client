@@ -367,7 +367,7 @@ pub fn default_hosts() -> Vec<HostStatus> {
 #[derive(Debug, Clone, Validate, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct HostStatus {
-    pub host_ip: IpAddr,
+    pub ip: IpAddr,
     pub bandwidth: u32,
 }
 
@@ -375,7 +375,7 @@ pub struct HostStatus {
 impl Default for HostStatus {
     fn default() -> Self {
         Self {
-            host_ip: "0.0.0.0".parse().unwrap(),
+            ip: "0.0.0.0".parse().unwrap(),
             bandwidth: 0,
         }
     }
@@ -384,16 +384,19 @@ impl Default for HostStatus {
 // for demo
 #[derive(Debug, Clone, Validate, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
-pub struct HostsStatus {
+pub struct HostSelector {
     #[serde(default = "default_hosts")]
     pub hosts: Vec<HostStatus>,
+
+    pub enable: bool,
 }
 
 /// HostsStatus implements Default.
-impl Default for HostsStatus {
+impl Default for HostSelector {
     fn default() -> Self {
         Self {
             hosts: Vec::new(),
+            enable: true,
         }
     }
 }
@@ -1332,7 +1335,7 @@ pub struct Config {
     pub network: Network,
 
     #[validate]
-    pub status: HostsStatus,
+    pub host_selector: HostSelector,
 }
 
 /// Config implements the config operation of dfdaemon.
