@@ -36,7 +36,7 @@ download:
 upload:
   server:
     # port is the port to the grpc server.
-    port: 4010
+    port: 4000
   # # ip is the listen ip of the grpc server.
   # ip: ""
   # # CA certificate file path for mTLS.
@@ -108,7 +108,7 @@ gc:
 proxy:
   server:
     # port is the port to the proxy server.
-    port: 4011
+    port: 4001
   # # ip is the listen ip of the proxy server.
   # ip: ""
   # # caCert is the root CA cert path with PEM format for the proxy server to generate the server cert.
@@ -181,7 +181,7 @@ proxy:
 metrics:
   server:
     # port is the port to the metrics server.
-    port: 4012
+    port: 4002
   # # ip is the listen ip of the metrics server.
   # ip: ""
 # # tracing is the tracing configuration for dfdaemon.
@@ -190,18 +190,20 @@ metrics:
 # addr: ""
 # Seed Peer configuration.
 manager:
-  addr: http://127.0.0.1:65003
+  addr: http://172.18.0.4:65003
 seedPeer:
   enable: false
 stats:
   server:
-    port: 4014
+    port: 4004
 health:
   server:
-    port: 4013
+    port: 4003
 hostSelector:
   enable: false
   hosts:
-  - ip: 172.27.153.58
+  - ip: 172.18.0.11
     bandwidth: 100
+  - ip: 172.18.0.12
+    bandwidth: 400
 

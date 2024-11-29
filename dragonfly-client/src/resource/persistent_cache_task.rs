@@ -52,7 +52,7 @@ use tokio::time::sleep;
 use tokio_stream::{wrappers::ReceiverStream, StreamExt};
 use tonic::{Request, Status};
 use tracing::{error, info, instrument, Instrument};
-use crate::resource::host_status::HostStatusCollector;
+use crate::resource::host_status::ParentStatusSyncer;
 use super::*;
 
 /// PersistentCacheTask represents a persistent cache task manager.
@@ -811,7 +811,7 @@ impl PersistentCacheTask {
                     host: peer.host.clone(),
                 })
                 .collect(),
-            HostStatusCollector::new(self.config.host_selector.hosts.clone()),
+            ParentStatusSyncer::new(self.config.host_selector.hosts.clone()),
         );
         piece_collector.run().await;
 

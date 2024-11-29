@@ -32,7 +32,7 @@ use std::time::Duration;
 // use openssl::rand;
 use rand::{Rng, SeedableRng};
 use rand::rngs::StdRng;
-use crate::resource::host_status::HostStatusCollector;
+use crate::resource::host_status::ParentStatusSyncer;
 
 /// CollectedParent is the parent peer collected from the remote peer.
 #[derive(Clone, Debug)]
@@ -83,13 +83,13 @@ pub struct PieceCollector {
     // collected_parent id -> collected_pieces
     waited_pieces: Arc<DashMap<String, SegQueue<CollectedPiece>>>,
 
-    collector: HostStatusCollector,
+    syncer: ParentStatusSyncer,
 
     next_idx: usize,
 
     rng: StdRng,
     
-    enable_host_selection: bool,
+    enable_parent_selection: bool,
 }
 
 impl PieceCollector {
@@ -101,7 +101,7 @@ impl PieceCollector {
         task_id: &str,
         interested_pieces: Vec<metadata::Piece>,
         parents: Vec<CollectedParent>,
-        collector: HostStatusCollector,
+        collector: ParentStatusSyncer,
     ) -> Self {
         let collected_pieces = Arc::new(DashSet::new());
         let waited_pieces: Arc<DashMap<String, SegQueue<CollectedPiece>>> = Arc::new(DashMap::new());
@@ -125,10 +125,10 @@ impl PieceCollector {
             interested_pieces,
             collected_pieces,
             waited_pieces,
-            collector,
+            syncer: collector,
             next_idx: 0,
             rng,
-            enable_host_selection,
+            enable_parent_selection: enable_host_selection,
         }
     }
 
@@ -144,9 +144,7 @@ impl PieceCollector {
         let collected_pieces = self.collected_pieces.clone(); 
         let waited_pieces = self.waited_pieces.clone();
         let collected_piece_timeout = self.config.download.piece_timeout.clone();
-        if self.enable_host_selection {
-            self.sync_parents_status();
-        }
+        self.init_parents_status();
         info!("[baowj] after sync parent status");
         tokio::spawn(
             async move {
@@ -324,7 +322,7 @@ impl PieceCollector {
         let collected_pieces = self.collected_pieces.clone();
         let mut find = false;
         
-        if self.enable_host_selection {
+        if self.enable_parent_selection {
             let ip = self.random_parent_ip();
             info!("[baowj] next_piece get random ip: {}", ip);
             match waited_pieces.get(&ip) {
@@ -352,11 +350,13 @@ impl PieceCollector {
                 collected_pieces.insert(piece.number);
                 return piece;
             }
+            info!("[baowj] parent selection failed");
         }
         
         let start_idx = self.next_idx;
         loop {
             let parent_host = self.parents[self.next_idx].host.clone();
+            self.next_idx = (self.next_idx + 1) % self.parents.len();
             let queue = waited_pieces.get(&parent_host.unwrap().ip).unwrap();
             loop {
                 match queue.pop() {
@@ -376,7 +376,6 @@ impl PieceCollector {
             if find {
                 break;
             } else {
-                self.next_idx = (self.next_idx + 1) % self.parents.len();
                 if self.next_idx == start_idx {
                     info!("[baowj] sleep");
                     thread::sleep(Duration::from_millis(500));
@@ -387,12 +386,21 @@ impl PieceCollector {
         piece
     }
 
-    fn sync_parents_status(&mut self) {
+    fn init_parents_status(&mut self) {
         // 获取状态
         self.parents_status = Vec::new();
-        for parent in self.parents.iter() {
-            self.parents_status.push(self.collector.get_host_status(parent.host.clone().unwrap().ip.to_string()) as f32);
+
+        if self.enable_parent_selection {
+            // 注册 syncer
+            self.register_parents();
+            // 初始化
+            let parents_status = self.syncer.get_parents_status(&self.parents);
+            parents_status.iter().for_each(|status| self.parents_status.push(*status));
+        } else {
+            // 全部初始化为 100
+            self.parents.iter().for_each(|_| self.parents_status.push(100f32));
         }
+
         // 归一化
         let mut sum = 0.0;
         self.parents_status.iter().for_each(|p| sum += p);
@@ -400,6 +408,14 @@ impl PieceCollector {
         
         info!("[baowj] parents: {:?}", self.parents);
         info!("[baowj] sync parents status status: {:?}", self.parents_status)
+    }
+
+    fn register_parents(&self) {
+        self.syncer.register_parents(&self.parents);
+    }
+
+    fn unregister_parents(&self) {
+        self.syncer.unregister_parents(&self.parents);
     }
 
     pub fn random_parent_ip(&mut self) -> String {
