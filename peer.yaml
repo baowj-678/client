@@ -200,7 +200,7 @@ health:
   server:
     port: 4003
 hostSelector:
-  enable: false
+  enable: true
   hosts:
   - ip: 172.18.0.11
     bandwidth: 100

@@ -14,11 +14,11 @@ impl ParentStatusSyncer {
         ParentStatusSyncer {status: s}
     }
 
-    pub fn register_parents(&self, parents: &Vec<CollectedParent>) {
+    pub fn register_parents(&self, _parents: &Vec<CollectedParent>) {
         
     }
     
-    pub fn unregister_parents(&self, parents: &Vec<CollectedParent>) {
+    pub fn unregister_parents(&self, _parents: &Vec<CollectedParent>) {
         
     }
     
