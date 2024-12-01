@@ -18,4 +18,4 @@ pub mod persistent_cache_task;
 pub mod piece;
 pub mod piece_collector;
 pub mod task;
-mod host_status;
+pub mod parent_status_syncer;

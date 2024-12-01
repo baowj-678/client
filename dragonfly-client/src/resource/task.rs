@@ -58,7 +58,7 @@ use tokio::time::sleep;
 use tokio_stream::{wrappers::ReceiverStream, StreamExt};
 use tonic::{Request, Status};
 use tracing::{error, info, instrument, Instrument};
-use crate::resource::host_status::ParentStatusSyncer;
+use crate::resource::parent_status_syncer::ParentStatusSyncer;
 use super::*;
 
 /// Task represents a task manager.
@@ -80,6 +80,8 @@ pub struct Task {
 
     /// piece is the piece manager.
     pub piece: Arc<piece::Piece>,
+    
+    parent_status_syncer: Arc<ParentStatusSyncer>,
 }
 
 /// Task implements the task manager.
@@ -92,6 +94,7 @@ impl Task {
         storage: Arc<Storage>,
         scheduler_client: Arc<SchedulerClient>,
         backend_factory: Arc<BackendFactory>,
+        parent_status_syncer: Arc<ParentStatusSyncer>,
     ) -> Self {
         let piece = piece::Piece::new(
             config.clone(),
@@ -108,6 +111,7 @@ impl Task {
             scheduler_client: scheduler_client.clone(),
             backend_factory: backend_factory.clone(),
             piece: piece.clone(),
+            parent_status_syncer: parent_status_syncer.clone(),
         }
     }
 
@@ -918,7 +922,7 @@ impl Task {
                     host: peer.host.clone(),
                 })
                 .collect(),
-            ParentStatusSyncer::new(self.config.host_selector.hosts.clone()),
+            self.parent_status_syncer.clone(),
         );
         piece_collector.run().await;
 
@@ -1062,7 +1066,7 @@ impl Task {
                     storage.piece_id(task_id.as_str(), metadata.number),
                     metadata.parent_id
                 );
-
+                
                 let mut finished_pieces = finished_pieces.lock().unwrap();
                 finished_pieces.push(metadata.clone());
 
@@ -1092,7 +1096,6 @@ impl Task {
             );
         }
         
-        info!("[baowj] finish collect all piece");
         // Wait for the pieces to be downloaded.
         while let Some(message) = join_set
             .join_next()
@@ -1144,6 +1147,7 @@ impl Task {
                     // It will stop the download from the remote peer with scheduler
                     // and download from the source directly from middle.
                     let finished_pieces = finished_pieces.lock().unwrap().clone();
+                    piece_collector.stop();
                     return Ok(finished_pieces);
                 }
                 Err(err) => {
@@ -1155,7 +1159,8 @@ impl Task {
                 }
             }
         }
-
+        info!("[baowj] finish download all piece");
+        piece_collector.stop();
         let finished_pieces = finished_pieces.lock().unwrap().clone();
         Ok(finished_pieces)
     }

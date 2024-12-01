@@ -25,7 +25,7 @@ use dragonfly_client::grpc::{
 use dragonfly_client::health::Health;
 use dragonfly_client::metrics::Metrics;
 use dragonfly_client::proxy::Proxy;
-use dragonfly_client::resource::{persistent_cache_task::PersistentCacheTask, task::Task};
+use dragonfly_client::resource::{persistent_cache_task::PersistentCacheTask, task::Task, parent_status_syncer::ParentStatusSyncer};
 use dragonfly_client::shutdown;
 use dragonfly_client::stats::Stats;
 use dragonfly_client::tracing::init_tracing;
@@ -189,6 +189,10 @@ async fn main() -> Result<(), anyhow::Error> {
             err
         })?;
     let backend_factory = Arc::new(backend_factory);
+    
+    // 创建syncer
+    let parent_status_syncer = ParentStatusSyncer::new(&config.host_selector);
+    let parent_status_syncer = Arc::new(parent_status_syncer);
 
     // Initialize task manager.
     let task = Task::new(
@@ -197,6 +201,7 @@ async fn main() -> Result<(), anyhow::Error> {
         storage.clone(),
         scheduler_client.clone(),
         backend_factory.clone(),
+        parent_status_syncer.clone(),
     );
     let task = Arc::new(task);
 
@@ -207,6 +212,7 @@ async fn main() -> Result<(), anyhow::Error> {
         storage.clone(),
         scheduler_client.clone(),
         backend_factory.clone(),
+        parent_status_syncer.clone(),
     );
     let persistent_cache_task = Arc::new(persistent_cache_task);
 
@@ -333,6 +339,10 @@ async fn main() -> Result<(), anyhow::Error> {
 
         _ = tokio::spawn(async move { gc.run().await }) => {
             info!("garbage collector exited");
+        },
+        
+        _ = tokio::spawn(async move { parent_status_syncer.run().await }) => {
+            info!("parent status syncer exited");
         },
 
         _ = shutdown::shutdown_signal() => {},

@@ -52,7 +52,7 @@ use tokio::time::sleep;
 use tokio_stream::{wrappers::ReceiverStream, StreamExt};
 use tonic::{Request, Status};
 use tracing::{error, info, instrument, Instrument};
-use crate::resource::host_status::ParentStatusSyncer;
+use crate::resource::parent_status_syncer::ParentStatusSyncer;
 use super::*;
 
 /// PersistentCacheTask represents a persistent cache task manager.
@@ -71,6 +71,8 @@ pub struct PersistentCacheTask {
 
     /// piece is the piece manager.
     pub piece: Arc<piece::Piece>,
+    
+    parent_status_syncer: Arc<ParentStatusSyncer>,
 }
 
 /// PersistentCacheTask is the implementation of PersistentCacheTask.
@@ -83,6 +85,7 @@ impl PersistentCacheTask {
         storage: Arc<Storage>,
         scheduler_client: Arc<SchedulerClient>,
         backend_factory: Arc<BackendFactory>,
+        parent_status_syncer: Arc<ParentStatusSyncer>,
     ) -> Self {
         let piece = piece::Piece::new(
             config.clone(),
@@ -98,6 +101,7 @@ impl PersistentCacheTask {
             storage,
             scheduler_client,
             piece: piece.clone(),
+            parent_status_syncer: parent_status_syncer.clone(),
         }
     }
 
@@ -811,7 +815,7 @@ impl PersistentCacheTask {
                     host: peer.host.clone(),
                 })
                 .collect(),
-            ParentStatusSyncer::new(self.config.host_selector.hosts.clone()),
+            self.parent_status_syncer.clone(),
         );
         piece_collector.run().await;
 

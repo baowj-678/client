@@ -387,7 +387,9 @@ impl Default for HostStatus {
 pub struct HostSelector {
     #[serde(default = "default_hosts")]
     pub hosts: Vec<HostStatus>,
-
+    
+    pub test: bool,
+    
     pub enable: bool,
 }
 
@@ -397,6 +399,7 @@ impl Default for HostSelector {
         Self {
             hosts: Vec::new(),
             enable: true,
+            test: true,
         }
     }
 }

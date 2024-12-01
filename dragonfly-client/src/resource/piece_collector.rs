@@ -22,17 +22,19 @@ use dragonfly_client_config::dfdaemon::Config;
 use dragonfly_client_core::error::{ErrorType, OrErr};
 use dragonfly_client_core::{Error, Result};
 use dragonfly_client_storage::metadata;
-use std::sync::Arc;
+use std::sync::{Arc};
 use tokio::task::JoinSet;
 use tokio_stream::StreamExt;
 use tracing::{error, info, instrument, Instrument};
 use crossbeam_queue::SegQueue;
 use std::thread;
 use std::time::Duration;
-// use openssl::rand;
 use rand::{Rng, SeedableRng};
 use rand::rngs::StdRng;
-use crate::resource::host_status::ParentStatusSyncer;
+use tokio::sync::{RwLock};
+use tokio::time::sleep;
+use crate::resource::parent_status_syncer::ParentStatusSyncer;
+use crate::shutdown;
 
 /// CollectedParent is the parent peer collected from the remote peer.
 #[derive(Clone, Debug)]
@@ -72,7 +74,7 @@ pub struct PieceCollector {
     parents: Vec<CollectedParent>,
 
     /// parents status
-    parents_status: Vec<f32>,
+    parents_status: Arc<RwLock<Vec<f32>>>,
 
     /// interested_pieces is the pieces interested by the collector.
     interested_pieces: Vec<metadata::Piece>,
@@ -83,13 +85,17 @@ pub struct PieceCollector {
     // collected_parent id -> collected_pieces
     waited_queues: Arc<Vec<Arc<SegQueue<CollectedPiece>>>>,
 
-    syncer: ParentStatusSyncer,
+    syncer: Arc<ParentStatusSyncer>,
 
     next_idx: usize,
 
     rng: StdRng,
     
     enable_parent_selection: bool,
+    
+    interval: Duration,
+    
+    shutdown: shutdown::Shutdown,
 }
 
 impl PieceCollector {
@@ -101,7 +107,7 @@ impl PieceCollector {
         task_id: &str,
         interested_pieces: Vec<metadata::Piece>,
         parents: Vec<CollectedParent>,
-        collector: ParentStatusSyncer,
+        syncer: Arc<ParentStatusSyncer>,
     ) -> Self {
         let collected_pieces = Arc::new(DashSet::new());
         let mut waited_pieces: Vec<Arc<SegQueue<CollectedPiece>>> = Vec::new();
@@ -109,10 +115,11 @@ impl PieceCollector {
             waited_pieces.push(Arc::new(SegQueue::new()));
         }
         let waited_pieces = Arc::new(waited_pieces);
-        let parents_status = Vec::new();
+        let parents_status = Arc::new(RwLock::new(vec![1f32/(parents.len() as f32); parents.len()]));
         let seed: u64 = 42;
         let rng = StdRng::seed_from_u64(seed);
         let enable_host_selection = config.host_selector.enable.clone();
+        let shutdown = shutdown::Shutdown::default();
 
         Self {
             config,
@@ -123,17 +130,18 @@ impl PieceCollector {
             interested_pieces,
             collected_pieces,
             waited_queues: waited_pieces,
-            syncer: collector,
+            syncer: syncer.clone(),
             next_idx: 0,
             rng,
             enable_parent_selection: enable_host_selection,
+            interval: Duration::from_secs(3),
+            shutdown,
         }
     }
 
     /// run runs the piece collector.
     #[instrument(skip_all)]
     pub async fn run(&mut self) {
-        info!("[baowj] enter PieceCollector.run()");
         let config = self.config.clone();
         let host_id = self.host_id.clone();
         let task_id = self.task_id.clone();
@@ -142,11 +150,8 @@ impl PieceCollector {
         let collected_pieces = self.collected_pieces.clone(); 
         let waited_pieces = self.waited_queues.clone();
         let collected_piece_timeout = self.config.download.piece_timeout.clone();
-        self.init_parents_status();
-        info!("[baowj] after sync parent status");
         tokio::spawn(
             async move {
-                info!("[baowj] enter PieceCollector.run() async move");
                 Self::collect_from_remote_peers(
                     config,
                     host_id,
@@ -161,11 +166,41 @@ impl PieceCollector {
                 .unwrap_or_else(|err| {
                     error!("collect pieces failed: {}", err);
                 });
-                info!("[baowj] leave PieceCollector.run() async move");
             }
             .in_current_span()
         );
-        info!("[baowj] leave PieceCollector.run()");
+        
+        // start updating parents status
+        if self.enable_parent_selection {
+            self.register_parents();
+
+            let interval = self.interval;
+            let syncer = self.syncer.clone();
+            let parents = self.parents.clone();
+            let parents_status = self.parents_status.clone();
+            let shutdown = self.shutdown.clone();
+
+            let _ = tokio::spawn(
+                async move {
+                    Self::sync_parents_status(
+                        interval,
+                        syncer,
+                        parents,
+                        parents_status,
+                        shutdown,
+                    ).await;
+                }.in_current_span()
+            );
+        }
+    }
+
+
+    pub fn stop(&self) {
+        if self.enable_parent_selection {
+            let shutdown = self.shutdown.clone();
+            shutdown.trigger();
+            self.unregister_parents();
+        }
     }
 
     /// collect_from_remote_peers collects pieces from remote peers.
@@ -182,7 +217,6 @@ impl PieceCollector {
         collected_piece_timeout: Duration,
     ) -> Result<()> {
         // Create a task to collect pieces from peers.
-        info!("[baowj] start collect from remote peers");
         let mut join_set = JoinSet::new();
         for (i, parent) in parents.iter().enumerate() {
             #[allow(clippy::too_many_arguments)]
@@ -242,7 +276,7 @@ impl PieceCollector {
                         "received piece {}-{} metadata from parent {}",
                         task_id, message.number, parent.id
                     );
-                    
+
                     // add piece to waited_piece
                     let new_piece = CollectedPiece {
                         number: message.number,
@@ -305,7 +339,6 @@ impl PieceCollector {
         
         if self.enable_parent_selection {
             let idx = self.random_parent_idx();
-            info!("[baowj] next_piece get random idx: {}", idx);
 
             let queue = waited_pieces[idx].clone();
             loop {
@@ -353,7 +386,7 @@ impl PieceCollector {
                 break;
             } else {
                 if self.next_idx == start_idx {
-                    info!("[baowj] sleep");
+                    info!("[baowj] parent selection sleep");
                     thread::sleep(Duration::from_millis(500));
                 }
             }
@@ -362,43 +395,56 @@ impl PieceCollector {
         piece
     }
 
-    fn init_parents_status(&mut self) {
-        // 获取状态
-        self.parents_status = Vec::new();
-
-        if self.enable_parent_selection {
-            // 注册 syncer
-            self.register_parents();
-            // 初始化
-            let parents_status = self.syncer.get_parents_status(&self.parents);
-            parents_status.iter().for_each(|status| self.parents_status.push(*status));
-        } else {
-            // 全部初始化为 100
-            self.parents.iter().for_each(|_| self.parents_status.push(100f32));
-        }
-
-        // 归一化
-        let mut sum = 0.0;
-        self.parents_status.iter().for_each(|p| sum += p);
-        self.parents_status.iter_mut().for_each(|p|*p /= sum);
+    async fn sync_parents_status(
+        interval: Duration,
+        syncer: Arc<ParentStatusSyncer>,
+        parents: Vec<CollectedParent>,
+        parents_status: Arc<RwLock<Vec<f32>>>,
+        shutdown: shutdown::Shutdown,
+    ) {
+        info!("[baowj] start sync_parents_status");
+        let syncer = syncer;
+        let parents_status = parents_status;
+        let shutdown = shutdown;
         
-        info!("[baowj] parents: {:?}", self.parents);
-        info!("[baowj] sync parents status status: {:?}", self.parents_status)
+        loop {
+            if shutdown.is_shutdown() {
+                break
+            }
+
+            info!("[baowj] sync_parents_status loop");
+            // 初始化
+            let mut sum = 0.0;
+            let new_status = syncer.get_parents_status(&parents);
+            let mut s = parents_status.write().await;
+            for (idx, status) in new_status.iter().enumerate() {
+                sum += *status;
+                (*s)[idx] = *status;
+            }
+            // 归一化
+            (*s).iter_mut().for_each(|p| *p /= sum);
+            drop(s);
+            info!("[baowj] sync parents status status: {:?}", parents_status);
+            sleep(interval).await;
+        }
     }
 
     fn register_parents(&self) {
-        self.syncer.register_parents(&self.parents);
+        self.syncer.clone().register_parents(&self.parents);
     }
 
     fn unregister_parents(&self) {
-        self.syncer.unregister_parents(&self.parents);
+        self.syncer.clone().unregister_parents(&self.parents);
     }
 
     pub fn random_parent_idx(&mut self) -> usize {
+        let parents_status = self.parents_status.clone();
+
         // 获取的  parent id
         let random_num: f32 = self.rng.gen();
         let mut s: f32 = 0.0;
-        for (index, v) in self.parents_status.iter().enumerate() {
+        let parents_status = parents_status.blocking_read();
+        for (index, v) in (*parents_status).iter().enumerate() {
             s += v;
             if s >= random_num {
                 return index
