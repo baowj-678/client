@@ -24,14 +24,7 @@ use crate::metrics::{
 use crate::resource::{persistent_cache_task, task};
 use crate::shutdown;
 use dragonfly_api::common::v2::{PersistentCacheTask, Piece, Priority, Task, TaskType};
-use dragonfly_api::dfdaemon::v2::{
-    dfdaemon_upload_client::DfdaemonUploadClient as DfdaemonUploadGRPCClient,
-    dfdaemon_upload_server::{DfdaemonUpload, DfdaemonUploadServer as DfdaemonUploadGRPCServer},
-    DeletePersistentCacheTaskRequest, DeleteTaskRequest, DownloadPersistentCacheTaskRequest,
-    DownloadPersistentCacheTaskResponse, DownloadPieceRequest, DownloadPieceResponse,
-    DownloadTaskRequest, DownloadTaskResponse, StatPersistentCacheTaskRequest, StatTaskRequest,
-    SyncPiecesRequest, SyncPiecesResponse,
-};
+use dragonfly_api::dfdaemon::v2::{dfdaemon_upload_client::DfdaemonUploadClient as DfdaemonUploadGRPCClient, dfdaemon_upload_server::{DfdaemonUpload, DfdaemonUploadServer as DfdaemonUploadGRPCServer}, DeletePersistentCacheTaskRequest, DeleteTaskRequest, DownloadPersistentCacheTaskRequest, DownloadPersistentCacheTaskResponse, DownloadPieceRequest, DownloadPieceResponse, DownloadTaskRequest, DownloadTaskResponse, ParentStatusRequest, ParentStatusResponse, StatPersistentCacheTaskRequest, StatTaskRequest, SyncPiecesRequest, SyncPiecesResponse};
 use dragonfly_api::errordetails::v2::Backend;
 use dragonfly_client_config::dfdaemon::Config;
 use dragonfly_client_core::{
@@ -1075,6 +1068,10 @@ impl DfdaemonUpload for DfdaemonUploadServerHandler {
         self.persistent_cache_task.delete(task_id.as_str()).await;
         Ok(Response::new(()))
     }
+
+    async fn sync_parent_status(&self, request: Request<ParentStatusRequest>) -> Result<Response<ParentStatusResponse>, Status> {
+        todo!()
+    }
 }
 
 /// DfdaemonUploadClient is a wrapper of DfdaemonUploadGRPCClient.
@@ -1248,6 +1245,16 @@ impl DfdaemonUploadClient {
         Ok(())
     }
 
+    #[instrument(skip_all)]
+    pub async fn sync_parent_status(
+        &self, 
+        request: ParentStatusRequest
+    ) -> ClientResult<tonic::Response<ParentStatusResponse>> {
+        let request = Self::make_request(request);
+        let response = self.client.clone().sync_parent_status(request).await?;
+        Ok(response)
+    }
+    
     /// make_request creates a new request with timeout.
     #[instrument(skip_all)]
     fn make_request<T>(request: T) -> tonic::Request<T> {

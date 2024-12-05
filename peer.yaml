@@ -97,7 +97,7 @@ gc:
   interval: 900s
   policy:
     # taskTTL is the ttl of the task.
-    taskTTL: 21600s
+    taskTTL: 21600m
     # distHighThresholdPercent is the high threshold percent of the disk usage.
     # If the disk usage is greater than the threshold, dfdaemon will do gc.
     distHighThresholdPercent: 80
@@ -199,9 +199,12 @@ stats:
 health:
   server:
     port: 4003
-hostSelector:
+parentSelector:
   test: true
-  enable: false
+  enable: true
+  interval: 3s
+  receivedLimit: 1GiB
+  transmittedLimit: 1GiB
   hosts:
   - ip: 172.18.0.11 # seed
     bandwidth: 500

@@ -1,13 +1,15 @@
-use dragonfly_client_config::dfdaemon::{HostSelector};
+use dragonfly_client_config::dfdaemon::{Config, ParentSelector};
 use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::Duration;
 use dashmap::{DashMap};
 use dragonfly_api::common::v2::Host;
+use dragonfly_api::dfdaemon::v2::ParentStatusRequest;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinSet;
 use tokio::time::sleep;
 use tracing::{info, instrument, Instrument};
+use crate::grpc::dfdaemon_upload::DfdaemonUploadClient;
 use crate::resource::piece_collector::CollectedParent;
 
 #[derive(Clone)]
@@ -21,6 +23,8 @@ pub struct ParentStatusElement {
 
 
 pub struct ParentStatusSyncer {
+    config: Arc<Config>,
+
     enable: bool,
 
     test: bool,
@@ -35,44 +39,15 @@ pub struct ParentStatusSyncer {
 }
 
 impl ParentStatusSyncer {
-    pub fn new(host_selector: &HostSelector) -> ParentStatusSyncer {
+    pub fn new(config: Arc<Config>) -> ParentStatusSyncer {
         let status: DashMap<String, ParentStatusElement> = DashMap::new();
-        
-        host_selector.hosts.iter().for_each(|host| {
-            let value = ParentStatusElement {
-                status: host.bandwidth as f32,
-                reference: 1,
-                parent: CollectedParent {
-                    id: host.ip.to_string(),
-                    host: Option::from(Host {
-                        id: "".to_string(),
-                        r#type: 0,
-                        hostname: "".to_string(),
-                        ip: host.ip.to_string(),
-                        port: 0,
-                        download_port: 0,
-                        os: "".to_string(),
-                        platform: "".to_string(),
-                        platform_family: "".to_string(),
-                        platform_version: "".to_string(),
-                        kernel_version: "".to_string(),
-                        cpu: None,
-                        memory: None,
-                        network: None,
-                        disk: None,
-                        build: None,
-                        scheduler_cluster_id: 0,
-                        disable_shared: false,
-                    })
-                }
-            };
-            status.insert(host.ip.to_string(), value);
-        });
+
         let status = Arc::new(status);
         
         ParentStatusSyncer {
-            enable: host_selector.enable,
-            test: host_selector.test,
+            config: config.clone(),
+            enable: config.parent_selector.enable,
+            test: config.parent_selector.test,
             status: status.clone(),
             worker_num: 3,
             interval: Duration::from_secs(1),
@@ -80,6 +55,7 @@ impl ParentStatusSyncer {
         }
     }
 
+    #[instrument(skip_all)]
     pub fn register_parents(&self, add_parents: &Vec<CollectedParent>) {
         let status = self.status.clone();
         let mutex = self.mutex.clone();
@@ -110,7 +86,8 @@ impl ParentStatusSyncer {
         }
         info!("[baowj] after register status length: {}", status.len());
     }
-    
+
+    #[instrument(skip_all)]#[instrument(skip_all)]
     pub fn unregister_parents(&self, delete_parents: &Vec<CollectedParent>) {
         let status = self.status.clone();
         let mutex = self.mutex.clone();
@@ -148,24 +125,41 @@ impl ParentStatusSyncer {
             thread::park();
         }
         info!("[baowj] ParentStatusSyncer run");
-        
-        let status = self.status.clone();
-        let num = self.worker_num.clone();
-        let mutex = self.mutex.clone();
-        
+
+        self.init_test_config();
+
         async fn sync_parent_status(
+            config: Arc<Config>,
             status: Arc<DashMap<String, ParentStatusElement>>,
             parent: CollectedParent,
             permit: Arc<OwnedSemaphorePermit>,
             mutex: Arc<RwLock<usize>>,
         ) {
             info!("[baowj] ParentStatusSyncer.sync_parent_status: ip: {}", parent.host.clone().unwrap().ip);
+            let host = parent.host.clone().unwrap();
             // todo request and update
+            let client = DfdaemonUploadClient::new(config.clone(),
+                                                   format!("http://{}:{}", host.ip, host.port)).await.unwrap();
+
+            let request = ParentStatusRequest {
+                host_id: config.host.hostname.clone(),
+                peer_id: config.host.ip.unwrap().to_string(),
+            };
+            let response = client.sync_parent_status(request).await.unwrap();
+
+            let network = response.into_inner().network.clone().unwrap();
+            info!("[baowj] sync_parent_status: received:{}, transmitted: {}", network.upload_rate, network.download_rate);
+
             let mutex = mutex.read().unwrap();
             status.entry(parent.host.unwrap().ip).and_modify(|v|(*v).status = 100f32);
             drop(mutex);
             drop(permit);
         }
+
+        let status = self.status.clone();
+        let num = self.worker_num.clone();
+        let mutex = self.mutex.clone();
+        let config = self.config.clone();
         
         loop {
             info!("[baowj] enter loop, parents length: {}", status.len());
@@ -179,6 +173,7 @@ impl ParentStatusSyncer {
                 
                 let _ = join_set.spawn(
                     sync_parent_status(
+                        config.clone(),
                         status.clone(),
                         parent.clone(),
                         permit.clone(),
@@ -193,7 +188,45 @@ impl ParentStatusSyncer {
             sleep(self.interval).await;
         }
     }
-    
+
+    pub fn init_test_config(&self) {
+        info!("[baowj] init_test_config");
+        let config = self.config.clone();
+        let status = self.status.clone();
+        config.parent_selector.hosts.iter().for_each(|host| {
+            let value = ParentStatusElement {
+                status: host.bandwidth as f32,
+                reference: 1,
+                parent: CollectedParent {
+                    id: host.ip.to_string(),
+                    host: Option::from(Host {
+                        id: "".to_string(),
+                        r#type: 0,
+                        hostname: "".to_string(),
+                        ip: host.ip.to_string(),
+                        port: 4000,
+                        download_port: 0,
+                        os: "".to_string(),
+                        platform: "".to_string(),
+                        platform_family: "".to_string(),
+                        platform_version: "".to_string(),
+                        kernel_version: "".to_string(),
+                        cpu: None,
+                        memory: None,
+                        network: None,
+                        disk: None,
+                        build: None,
+                        scheduler_cluster_id: 0,
+                        disable_shared: false,
+                    })
+                }
+            };
+            status.insert(host.ip.to_string(), value);
+            info!("[baowj] init_test_config insert ip: {}, port: 4000", host.ip.to_string());
+        });
+    }
+
+    #[instrument(skip_all)]
     pub fn get_parents_status(&self, parents: &Vec<CollectedParent>) -> Vec<f32> {
         let mut result = Vec::new();
         let status = self.status.clone();

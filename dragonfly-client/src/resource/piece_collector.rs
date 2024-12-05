@@ -118,7 +118,7 @@ impl PieceCollector {
         let parents_status = Arc::new(RwLock::new(vec![1f32/(parents.len() as f32); parents.len()]));
         let seed: u64 = 42;
         let rng = StdRng::seed_from_u64(seed);
-        let enable_host_selection = config.host_selector.enable.clone();
+        let enable_host_selection = config.parent_selector.enable.clone();
         let shutdown = shutdown::Shutdown::default();
 
         Self {

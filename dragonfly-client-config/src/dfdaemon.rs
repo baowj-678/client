@@ -384,22 +384,38 @@ impl Default for HostStatus {
 // for demo
 #[derive(Debug, Clone, Validate, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
-pub struct HostSelector {
+pub struct ParentSelector {
     #[serde(default = "default_hosts")]
     pub hosts: Vec<HostStatus>,
     
     pub test: bool,
     
     pub enable: bool,
+
+    #[serde(
+        with = "humantime_serde"
+    )]
+    pub interval: Duration,
+
+    /// received_limit is the rate limit of the received speed in GiB/Mib/Kib per second.
+    #[serde(with = "bytesize_serde")]
+    pub received_limit: ByteSize,
+
+    /// received_limit is the rate limit of the received speed in GiB/Mib/Kib per second.
+    #[serde(with = "bytesize_serde")]
+    pub transmitted_limit: ByteSize,
 }
 
 /// HostsStatus implements Default.
-impl Default for HostSelector {
+impl Default for ParentSelector {
     fn default() -> Self {
         Self {
             hosts: Vec::new(),
             enable: true,
             test: true,
+            interval: Duration::from_secs(1),
+            received_limit: ByteSize::gib(1),
+            transmitted_limit: ByteSize::gib(1),
         }
     }
 }
@@ -1338,7 +1354,7 @@ pub struct Config {
     pub network: Network,
 
     #[validate]
-    pub host_selector: HostSelector,
+    pub parent_selector: ParentSelector,
 }
 
 /// Config implements the config operation of dfdaemon.
