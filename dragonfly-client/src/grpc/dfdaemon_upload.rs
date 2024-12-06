@@ -34,7 +34,7 @@ use dragonfly_client_core::{
 use dragonfly_client_util::http::{
     get_range, hashmap_to_reqwest_headermap, reqwest_headermap_to_hashmap,
 };
-use std::net::SocketAddr;
+use std::net::{SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -48,6 +48,7 @@ use tonic::{
 };
 use tracing::{error, info, instrument, Instrument, Span};
 use url::Url;
+use crate::resource::parent_status_server::ParentStatusServer;
 
 /// DfdaemonUploadServer is the grpc server of the upload.
 pub struct DfdaemonUploadServer {
@@ -76,6 +77,7 @@ impl DfdaemonUploadServer {
         addr: SocketAddr,
         task: Arc<task::Task>,
         persistent_cache_task: Arc<persistent_cache_task::PersistentCacheTask>,
+        server: Arc<ParentStatusServer>,
         shutdown: shutdown::Shutdown,
         shutdown_complete_tx: mpsc::UnboundedSender<()>,
     ) -> Self {
@@ -84,6 +86,7 @@ impl DfdaemonUploadServer {
             socket_path: config.download.server.socket_path.clone(),
             task,
             persistent_cache_task,
+            parent_status_server: server.clone(),
         })
         .send_compressed(CompressionEncoding::Zstd)
         .accept_compressed(CompressionEncoding::Zstd)
@@ -153,6 +156,9 @@ pub struct DfdaemonUploadServerHandler {
 
     /// persistent_cache_task is the persistent cache task manager.
     persistent_cache_task: Arc<persistent_cache_task::PersistentCacheTask>,
+
+    /// parent status server
+    parent_status_server: Arc<ParentStatusServer>,
 }
 
 /// DfdaemonUploadServerHandler implements the dfdaemon upload grpc service.
@@ -1070,7 +1076,31 @@ impl DfdaemonUpload for DfdaemonUploadServerHandler {
     }
 
     async fn sync_parent_status(&self, request: Request<ParentStatusRequest>) -> Result<Response<ParentStatusResponse>, Status> {
-        todo!()
+        match request.remote_addr() {
+            Some(addr) => {
+                info!("[baowj] sync_parent_status got ip: {}", addr);
+                let server = self.parent_status_server.clone();
+                match server.status(addr.ip()) {
+                    Ok(result) => {
+                        info!("[baowj] sync_parent_status result, transmitted_reserved: {}", result);
+                        Ok(Response::new(
+                            ParentStatusResponse {
+                                status: result.as_u64(),
+                            }
+                        ))
+                        
+                    }
+                    Err(error) => {
+                        info!("[baowj] sync_parent_status internal error: {}", error);
+                        Err(Status::internal(error))
+                    }
+                }
+            },
+            None => {
+                info!("[baowj] sync_parent_status invalid ip");
+                Err(Status::invalid_argument("invalid ip"))
+            }
+        }
     }
 }
 
@@ -1247,14 +1277,14 @@ impl DfdaemonUploadClient {
 
     #[instrument(skip_all)]
     pub async fn sync_parent_status(
-        &self, 
+        &self,
         request: ParentStatusRequest
     ) -> ClientResult<tonic::Response<ParentStatusResponse>> {
         let request = Self::make_request(request);
         let response = self.client.clone().sync_parent_status(request).await?;
         Ok(response)
     }
-    
+
     /// make_request creates a new request with timeout.
     #[instrument(skip_all)]
     fn make_request<T>(request: T) -> tonic::Request<T> {

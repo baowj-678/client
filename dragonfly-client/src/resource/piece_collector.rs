@@ -118,7 +118,7 @@ impl PieceCollector {
         let parents_status = Arc::new(RwLock::new(vec![1f32/(parents.len() as f32); parents.len()]));
         let seed: u64 = 42;
         let rng = StdRng::seed_from_u64(seed);
-        let enable_host_selection = config.parent_selector.enable.clone();
+        let enable_parent_selection = config.parent_selector.enable.clone();
         let shutdown = shutdown::Shutdown::default();
 
         Self {
@@ -133,7 +133,7 @@ impl PieceCollector {
             syncer: syncer.clone(),
             next_idx: 0,
             rng,
-            enable_parent_selection: enable_host_selection,
+            enable_parent_selection,
             interval: Duration::from_secs(3),
             shutdown,
         }
@@ -418,8 +418,8 @@ impl PieceCollector {
             let new_status = syncer.get_parents_status(&parents);
             let mut s = parents_status.write().await;
             for (idx, status) in new_status.iter().enumerate() {
-                sum += *status;
-                (*s)[idx] = *status;
+                sum += *status as f32;
+                (*s)[idx] = *status as f32;
             }
             // 归一化
             (*s).iter_mut().for_each(|p| *p /= sum);

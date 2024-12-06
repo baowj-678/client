@@ -368,6 +368,7 @@ pub fn default_hosts() -> Vec<HostStatus> {
 #[serde(default, rename_all = "camelCase")]
 pub struct HostStatus {
     pub ip: IpAddr,
+    pub port: u16,
     pub bandwidth: u32,
 }
 
@@ -376,6 +377,7 @@ impl Default for HostStatus {
     fn default() -> Self {
         Self {
             ip: "0.0.0.0".parse().unwrap(),
+            port: 4000,
             bandwidth: 0,
         }
     }
@@ -388,18 +390,16 @@ pub struct ParentSelector {
     #[serde(default = "default_hosts")]
     pub hosts: Vec<HostStatus>,
     
-    pub test: bool,
-    
     pub enable: bool,
+    
+    pub server_enable: bool,
+    
+    pub syncer_enable: bool,
 
     #[serde(
         with = "humantime_serde"
     )]
     pub interval: Duration,
-
-    /// received_limit is the rate limit of the received speed in GiB/Mib/Kib per second.
-    #[serde(with = "bytesize_serde")]
-    pub received_limit: ByteSize,
 
     /// received_limit is the rate limit of the received speed in GiB/Mib/Kib per second.
     #[serde(with = "bytesize_serde")]
@@ -412,9 +412,9 @@ impl Default for ParentSelector {
         Self {
             hosts: Vec::new(),
             enable: true,
-            test: true,
+            server_enable: false,
+            syncer_enable: false,
             interval: Duration::from_secs(1),
-            received_limit: ByteSize::gib(1),
             transmitted_limit: ByteSize::gib(1),
         }
     }

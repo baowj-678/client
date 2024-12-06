@@ -24,4 +24,4 @@ tc qdisc del dev eth0 root
 
 ### build docker
 
-docker build -f ./ci/Dockerfile -t baowj/client:v0.1.116 .
+docker build -f ./ci/Dockerfile -t baowj/dragonfly-client:v0.1.116 .

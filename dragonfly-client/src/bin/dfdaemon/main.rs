@@ -280,6 +280,7 @@ async fn main() -> Result<(), anyhow::Error> {
         SocketAddr::new(config.upload.server.ip.unwrap(), config.upload.server.port),
         task.clone(),
         persistent_cache_task.clone(),
+        parent_status_server.clone(),
         shutdown.clone(),
         shutdown_complete_tx.clone(),
     );
