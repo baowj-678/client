@@ -7,7 +7,6 @@ use bytesize::ByteSize;
 use dashmap::{DashMap};
 use dragonfly_api::common::v2::Host;
 use dragonfly_api::dfdaemon::v2::ParentStatusRequest;
-use serde::de::Unexpected::Option;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinSet;
 use tokio::time::sleep;
