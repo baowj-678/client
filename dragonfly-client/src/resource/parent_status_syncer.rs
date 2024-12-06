@@ -51,14 +51,14 @@ impl ParentStatusSyncer {
 
         let status = Arc::new(status);
         
-        ParentStatusSyncer {
+        Self {
             config: config.clone(),
             enable: config.parent_selector.enable,
             syncer_enable: config.parent_selector.syncer_enable,
             id_generator,
             status: status.clone(),
             worker_num: 3,
-            interval: Duration::from_secs(1),
+            interval: config.parent_selector.interval.clone(),
             mutex: Arc::new(RwLock::new(0)),
         }
     }
@@ -82,7 +82,7 @@ impl ParentStatusSyncer {
                         reference: 1,
                         parent: parent.clone(),
                         fixed: false,
-                        };
+                    };
                     status.insert(ip.clone(), value);
                     info!("[baowj] add register to: {}:{}, ref: {}", &ip, &port, 1);
                 },
@@ -152,26 +152,32 @@ impl ParentStatusSyncer {
             let host = parent.host.clone().unwrap();
             
             let client = DfdaemonUploadClient::new(config.clone(),
-                                                   format!("http://{}:{}", host.ip, host.port)).await.unwrap();
-
-            let request = ParentStatusRequest {
-                host_id: host_id.clone(),
-                peer_id: peer_id.clone(),
-            };
-            match client.sync_parent_status(request).await {
-                Ok(response) => {
-                    let response = response.into_inner().status;
-                    let mutex = mutex.read().unwrap();
-                    status.entry(parent.host.unwrap().ip).and_modify(|v| {
-                        if !v.fixed {
-                            info!("[baowj] sync_parent_status, update {} status: {}", host.ip, ByteSize(response));
-                            (*v).status = response;
+                                                   format!("http://{}:{}", host.ip, host.port));
+            match client.await {
+                Ok(client) => {
+                    let request = ParentStatusRequest {
+                        host_id: host_id.clone(),
+                        peer_id: peer_id.clone(),
+                    };
+                    match client.sync_parent_status(request).await {
+                        Ok(response) => {
+                            let response = response.into_inner().status;
+                            let mutex = mutex.read().unwrap();
+                            status.entry(parent.host.unwrap().ip).and_modify(|v| {
+                                if !v.fixed {
+                                    info!("[baowj] sync_parent_status, update {} status: {}", host.ip, ByteSize(response));
+                                    (*v).status = response;
+                                }
+                            });
+                            drop(mutex);
                         }
-                    });
-                    drop(mutex);
+                        Err(error) => {
+                            info!("[baowj] sync_parent_status, failed to connect: {}, err: {:?}", host.ip, error);
+                        }
+                    };
                 }
                 Err(error) => {
-                    info!("[baowj] sync_parent_status, failed to connect: {}, err: {:?}", host.ip, error);
+                    info!("[baowj] sync_parent_status {}, error {}", host.ip, error);
                 }
             };
             drop(permit);
@@ -221,7 +227,7 @@ impl ParentStatusSyncer {
         let status = self.status.clone();
         config.parent_selector.hosts.iter().for_each(|host| {
             let value = ParentStatusElement {
-                status: host.bandwidth as u64,
+                status: host.bandwidth.as_u64(),
                 reference: 1,
                 parent: CollectedParent {
                     id: host.ip.to_string(),

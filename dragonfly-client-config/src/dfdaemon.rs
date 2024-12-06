@@ -369,7 +369,9 @@ pub fn default_hosts() -> Vec<HostStatus> {
 pub struct HostStatus {
     pub ip: IpAddr,
     pub port: u16,
-    pub bandwidth: u32,
+
+    #[serde(with = "bytesize_serde")]
+    pub bandwidth: ByteSize,
 }
 
 /// HostStatus implements Default.
@@ -378,7 +380,7 @@ impl Default for HostStatus {
         Self {
             ip: "0.0.0.0".parse().unwrap(),
             port: 4000,
-            bandwidth: 0,
+            bandwidth: ByteSize::gib(1),
         }
     }
 }

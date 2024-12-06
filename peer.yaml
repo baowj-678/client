@@ -202,14 +202,14 @@ health:
 parentSelector:
   enable: true
   serverEnable: true
-  syncerEnable: false
+  syncerEnable: true
   interval: 3s
-  transmittedLimit: 1GiB
-  hosts:
-  - ip: 172.18.0.11 # seed
-    port: 4000
-    bandwidth: 500
-  - ip: 172.18.0.12 # peer
-    port: 4000
-    bandwidth: 100
+  transmittedLimit: 500GiB
+#  hosts:
+#  - ip: 172.18.0.11 # seed
+#    port: 4000
+#    bandwidth: 100MiB
+#  - ip: 172.18.0.12 # peer
+#    port: 4000
+#    bandwidth: 100MiB
 
