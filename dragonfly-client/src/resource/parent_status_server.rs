@@ -11,6 +11,13 @@ use dragonfly_client_config::dfdaemon::{Config};
 use pnet::datalink;
 use pnet::ipnetwork::IpNetwork;
 
+pub struct Network {
+    interface_to_ips: DashMap<String, Vec<IpNetwork>>,
+
+    // interface to transmitted rate
+    transmitted_reserved: DashMap<String, ByteSize>,
+}
+
 pub struct ParentStatusServer {
     config: Arc<Config>,
 
@@ -24,7 +31,9 @@ pub struct ParentStatusServer {
 }
 
 impl ParentStatusServer {
-    pub fn new(config: Arc<Config>) -> Result<Self, String> {
+    pub fn new(
+        config: Arc<Config>
+    ) -> Result<Self, String> {
         Ok(
             Self {
                 config: config.clone(),
@@ -82,7 +91,10 @@ impl ParentStatusServer {
         info!("[baowj] init interface and ip: {:?}", network.interface_to_ips);
     }
 
-    pub fn status(&self, ip: IpAddr) -> Result<ByteSize, String> {
+    pub fn status(
+        &self,
+        ip: IpAddr
+    ) -> Result<ByteSize, String> {
         let mut status = ByteSize(0u64);
         // get network
         let network = self.networks.clone();
@@ -119,9 +131,4 @@ impl ParentStatusServer {
 
 }
 
-pub struct Network {
-    interface_to_ips: DashMap<String, Vec<IpNetwork>>,
 
-    // interface to transmitted rate
-    transmitted_reserved: DashMap<String, ByteSize>,
-}

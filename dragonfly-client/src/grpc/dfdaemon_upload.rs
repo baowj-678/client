@@ -1075,7 +1075,9 @@ impl DfdaemonUpload for DfdaemonUploadServerHandler {
         Ok(Response::new(()))
     }
 
-    async fn sync_parent_status(&self, request: Request<ParentStatusRequest>) -> Result<Response<ParentStatusResponse>, Status> {
+    async fn sync_parent_status(&self,
+                                request: Request<ParentStatusRequest>
+    ) -> Result<Response<ParentStatusResponse>, Status> {
         match request.remote_addr() {
             Some(addr) => {
                 info!("[baowj] sync_parent_status got ip: {}", addr);

@@ -46,7 +46,10 @@ pub struct ParentStatusSyncer {
 }
 
 impl ParentStatusSyncer {
-    pub fn new(config: Arc<Config>, id_generator: Arc<IDGenerator>,) -> ParentStatusSyncer {
+    pub fn new(
+        config: Arc<Config>,
+        id_generator: Arc<IDGenerator>
+    ) -> ParentStatusSyncer {
         let status: DashMap<String, ParentStatusElement> = DashMap::new();
 
         let status = Arc::new(status);
@@ -64,7 +67,10 @@ impl ParentStatusSyncer {
     }
 
     #[instrument(skip_all)]
-    pub fn register_parents(&self, add_parents: &Vec<CollectedParent>) {
+    pub fn register_parents(
+        &self,
+        add_parents: &Vec<CollectedParent>
+    ) {
         let status = self.status.clone();
         let mutex = self.mutex.clone();
         info!("[baowj] before register status length: {}", status.len());
@@ -97,8 +103,11 @@ impl ParentStatusSyncer {
         info!("[baowj] after register status length: {}", status.len());
     }
 
-    #[instrument(skip_all)]#[instrument(skip_all)]
-    pub fn unregister_parents(&self, delete_parents: &Vec<CollectedParent>) {
+    #[instrument(skip_all)]
+    pub fn unregister_parents(
+        &self,
+        delete_parents: &Vec<CollectedParent>
+    ) {
         let status = self.status.clone();
         let mutex = self.mutex.clone();
         info!("[baowj] before unregister status length: {}", status.len());
@@ -260,7 +269,10 @@ impl ParentStatusSyncer {
     }
 
     #[instrument(skip_all)]
-    pub fn get_parents_status(&self, parents: &Vec<CollectedParent>) -> Vec<u64> {
+    pub fn get_parents_status(
+        &self,
+        parents: &Vec<CollectedParent>
+    ) -> Vec<u64> {
         let mut result = Vec::new();
         let status = self.status.clone();
 
