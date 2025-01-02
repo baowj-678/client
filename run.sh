@@ -8,7 +8,7 @@ cargo run --bin dfdaemon --config peer.yaml -l info --verbose --log-dir log
 ./dfdaemon --config peer.yaml -l info --verbose --log-dir log
 
 dfget -O file http://210.28.132.18:18888/tmp.tar -e /var/run/dragonfly/peer.sock
-./dfget -O file http://210.28.132.18:18888/tmp.tar -e /var/run/dragonfly/peer-dev.sock
+./dfget -O file http://210.28.132.18:18888/random_file -e /var/run/dragonfly/peer-dev.sock
 
 # 限制容器带宽
 apt install iproute2
