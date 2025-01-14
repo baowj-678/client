@@ -334,7 +334,7 @@ impl PieceCollector {
                 tokio::time::sleep(Duration::from_millis(500)).await;
             }
         }
-        collected_pieces.insert(piece.number);
+        collected_pieces.remove(&piece.number);
         debug!("collect piece {} by default", piece.number);
         piece
     }
@@ -346,6 +346,7 @@ impl PieceCollector {
     }
 
     pub fn unregister_parents(&self) {
+        info!("[baowj] unregister");
         self.parent_selector
             .clone()
             .unregister_parents(self.task_id.clone());

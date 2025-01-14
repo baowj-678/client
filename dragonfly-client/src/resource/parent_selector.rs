@@ -19,7 +19,7 @@ use crate::resource::piece_collector::CollectedParent;
 use crate::shutdown::Shutdown;
 use bytesize::ByteSize;
 use dashmap::DashMap;
-use dragonfly_api::common::v2::Host;
+use dragonfly_api::common::v2::{Host};
 use dragonfly_api::dfdaemon::v2::SyncHostRequest;
 use dragonfly_client_config::dfdaemon::Config;
 use dragonfly_client_core::error::DFError::TaskNotFound;
@@ -34,7 +34,7 @@ use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio_stream::StreamExt;
-use tracing::{error, info, instrument, Instrument};
+use tracing::{debug, error, info, instrument, Instrument};
 use validator::HasLen;
 
 const DEFAULT_AVAILABLE_CAPACITY: f64 = ByteSize::gb(10).as_u64() as f64;
@@ -74,7 +74,7 @@ impl TaskParentSelector {
         let mut parent_list: Vec<String> = Vec::new();
         let mut probability: Vec<f64> = Vec::new();
 
-        let _ = collected_parents.iter().map(|parent| {
+        collected_parents.iter().for_each(|parent| {
             parents.insert(parent.id.clone(), Host::default());
             parent_list.push(parent.id.clone());
             probability.push(1f64 / parents.len() as f64);
@@ -136,13 +136,15 @@ impl TaskParentSelector {
             sum += 0.1f64;
 
             // Update probability.
-            let _ = self.probability.iter_mut().enumerate().map(|(idx, p)| {
+            self.probability.iter_mut().enumerate().for_each(|(idx, p)| {
                 if parent_available_capacity[idx] == 0f64 {
                     *p = avg / sum;
                 } else {
                     *p = parent_available_capacity[idx] / sum;
                 }
             });
+            debug!("update probability to {:?}", self.probability);
+            info!("[baowj]update probability to {:?}", self.probability);
             // Reset last_sync_time.
             self.last_sync_time = now_time;
         }
@@ -162,7 +164,10 @@ impl TaskParentSelector {
 
     /// available_capacity return the available capacity of the host.
     fn available_capacity(host: Host) -> Result<f64> {
-        Ok(host.network.unwrap().upload_rate as f64)
+        match host.network {
+            None => { Ok(DEFAULT_AVAILABLE_CAPACITY) }
+            Some(network) => { Ok(network.upload_rate as f64) }
+        }
     }
 }
 
@@ -176,7 +181,7 @@ pub struct ParentSelector {
     sync_interval: Duration,
 
     /// tasks is the collector for all parent selection tasks.
-    tasks: DashMap<String, TaskParentSelector>,
+    tasks: Arc<DashMap<String, TaskParentSelector>>,
 
     /// parent_cache is the lru cache to store sync host thread.
     parent_cache: Arc<Mutex<LruCache<String, Shutdown>>>,
@@ -192,7 +197,7 @@ impl ParentSelector {
     pub fn new(config: Arc<Config>, id_generator: Arc<IDGenerator>) -> ParentSelector {
         let config = config.clone();
         let sync_interval = config.download.parent_selector.sync_interval;
-        let tasks = DashMap::new();
+        let tasks = Arc::new(DashMap::new());
         let parent_cache = LruCache::new(
             NonZeroUsize::try_from(config.download.parent_selector.capacity).unwrap(),
         );
@@ -210,6 +215,12 @@ impl ParentSelector {
     /// register_parents registers task and it's parents.
     #[instrument(skip_all)]
     pub fn register_parents(&self, task_id: String, add_parents: &Vec<CollectedParent>) {
+        info!("[baowj] register");
+        // If not enable.
+        if !self.config.download.parent_selector.enable {
+            return;
+        }
+
         // No parents.
         if add_parents.length() == 0 {
             return;
@@ -220,11 +231,6 @@ impl ParentSelector {
         // Add task
         let task = TaskParentSelector::new(add_parents.clone(), self.sync_interval);
         tasks.insert(task_id, task);
-
-        // If not enable.
-        if !self.config.download.parent_selector.enable {
-            return;
-        }
 
         // Get LRU cache.
         let cache = self.parent_cache.clone();
@@ -286,11 +292,11 @@ impl ParentSelector {
         host_id: String,
         peer_id: String,
         parent: CollectedParent,
-        tasks: DashMap<String, TaskParentSelector>,
+        tasks: Arc<DashMap<String, TaskParentSelector>>,
         shutdown: Shutdown,
         sync_host_timeout: Duration,
     ) -> Result<()> {
-        info!("sync host info from parent {}", parent.id);
+        info!("[baowj] sync host info from parent {}", parent.id);
 
         // If parent.host is None, skip it.
         let host = parent.host.clone().ok_or_else(|| {
@@ -356,7 +362,12 @@ impl ParentSelector {
         let tasks = self.tasks.clone();
         match tasks.clone().get_mut(&task_id) {
             None => Err(TaskNotFound(task_id)),
-            Some(mut task) => Ok(task.select_parent().clone()),
+            Some(mut task) => {
+                let parent_id = task.select_parent().clone();
+                debug!("get optimal parent {}", parent_id);
+                info!("[baowj] get optimal parent {}", parent_id);
+                Ok(parent_id)
+            },
         }
     }
 }
