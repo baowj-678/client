@@ -37,26 +37,12 @@ use tokio_stream::StreamExt;
 use tracing::{error, info, instrument, Instrument};
 use validator::HasLen;
 
-#[allow(dead_code)]
 const DEFAULT_AVAILABLE_CAPACITY: f64 = ByteSize::gb(10).as_u64() as f64;
 
-#[allow(dead_code)]
 const DEFAULT_SYNC_HOST_TIMEOUT: u32 = 5;
-
-/// Parent is used to control sync host thread.
-#[derive(Clone)]
-#[allow(dead_code)]
-pub struct Parent {
-    /// parent is the CollectedParent to sync host.
-    parent: CollectedParent,
-
-    /// shutdown is used to stop sync host thread.
-    shutdown: Shutdown,
-}
 
 /// TaskParentSelector is used to store data to select parents for specific task.
 #[derive(Clone)]
-#[allow(dead_code)]
 pub struct TaskParentSelector {
     /// parents is the latest host info of different parents.
     parents: DashMap<String, Host>,
@@ -78,7 +64,6 @@ pub struct TaskParentSelector {
 }
 
 /// TaskParentSelector implements the task parent selector.
-#[allow(dead_code)]
 impl TaskParentSelector {
     /// new create a TaskParentSelector.
     pub fn new(
@@ -182,7 +167,7 @@ impl TaskParentSelector {
 }
 
 /// ParentSelector represents a parent selector.
-#[allow(dead_code)]
+#[derive(Clone)]
 pub struct ParentSelector {
     /// config is the configuration of the dfdaemon.
     config: Arc<Config>,
@@ -194,14 +179,13 @@ pub struct ParentSelector {
     tasks: DashMap<String, TaskParentSelector>,
 
     /// parent_cache is the lru cache to store sync host thread.
-    parent_cache: Arc<Mutex<LruCache<String, Parent>>>,
+    parent_cache: Arc<Mutex<LruCache<String, Shutdown>>>,
 
     /// id_generator is a IDGenerator.
     id_generator: Arc<IDGenerator>,
 }
 
 /// TaskParentSelector implements the task parent selector.
-#[allow(dead_code)]
 impl ParentSelector {
     /// new returns a ParentSelector.
     #[instrument(skip_all)]
@@ -251,18 +235,13 @@ impl ParentSelector {
             for parent in add_parents {
                 let shutdown = Shutdown::new();
 
-                // Create Parent
-                let new_parent = Parent {
-                    parent: parent.clone(),
-                    shutdown: shutdown.clone(),
-                };
                 if cache.len() == cache.cap().get() {
-                    if let Some(element) = cache.pop_lru() {
+                    if let Some((_, shutdown)) = cache.pop_lru() {
                         // Stop popped thread.
-                        element.1.shutdown.trigger();
+                        shutdown.trigger();
                     }
                 }
-                cache.push(parent.id.clone(), new_parent);
+                cache.push(parent.id.clone(), shutdown.clone());
 
                 // Start new thread.
                 let config = config.clone();

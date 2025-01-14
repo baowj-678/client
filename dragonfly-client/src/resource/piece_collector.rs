@@ -13,20 +13,22 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 use crate::grpc::dfdaemon_upload::DfdaemonUploadClient;
-use dashmap::DashMap;
+use crate::resource::parent_selector::ParentSelector;
+use crossbeam_queue::SegQueue;
+use dashmap::DashSet;
 use dragonfly_api::common::v2::Host;
 use dragonfly_api::dfdaemon::v2::SyncPiecesRequest;
 use dragonfly_client_config::dfdaemon::Config;
 use dragonfly_client_core::error::{ErrorType, OrErr};
 use dragonfly_client_core::{Error, Result};
 use dragonfly_client_storage::metadata;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::task::JoinSet;
 use tokio_stream::StreamExt;
+use tracing::log::debug;
 use tracing::{error, info, instrument, Instrument};
 
 /// CollectedParent is the parent peer collected from the parent.
@@ -69,7 +71,16 @@ pub struct PieceCollector {
     interested_pieces: Vec<metadata::Piece>,
 
     /// collected_pieces is the pieces collected from peers.
-    collected_pieces: Arc<DashMap<u32, String>>,
+    collected_pieces: Arc<DashSet<u32>>,
+
+    /// collected_parent id -> collected_pieces
+    waited_queues: Arc<Vec<Arc<SegQueue<CollectedPiece>>>>,
+
+    parent_selector: Arc<ParentSelector>,
+
+    parent_id: Arc<HashMap<String, usize>>,
+
+    next_idx: usize,
 }
 
 impl PieceCollector {
@@ -81,11 +92,22 @@ impl PieceCollector {
         task_id: &str,
         interested_pieces: Vec<metadata::Piece>,
         parents: Vec<CollectedParent>,
+        parent_selector: Arc<ParentSelector>,
     ) -> Self {
-        let collected_pieces = Arc::new(DashMap::with_capacity(interested_pieces.len()));
+        let collected_pieces = Arc::new(DashSet::with_capacity(interested_pieces.len()));
         for interested_piece in &interested_pieces {
-            collected_pieces.insert(interested_piece.number, String::new());
+            collected_pieces.insert(interested_piece.number);
         }
+
+        let mut waited_pieces: Vec<Arc<SegQueue<CollectedPiece>>> = Vec::new();
+        let mut parent_id = HashMap::new();
+        for (i, parent) in parents.iter().enumerate() {
+            waited_pieces.push(Arc::new(SegQueue::new()));
+            parent_id.insert(parent.id.clone(), i);
+        }
+        let waited_queues = Arc::new(waited_pieces);
+        let parent_id = Arc::new(parent_id);
+        let next_idx = 0;
 
         Self {
             config,
@@ -94,12 +116,16 @@ impl PieceCollector {
             parents,
             interested_pieces,
             collected_pieces,
+            waited_queues,
+            parent_selector,
+            parent_id,
+            next_idx,
         }
     }
 
     /// run runs the piece collector.
     #[instrument(skip_all)]
-    pub async fn run(&self) -> Receiver<CollectedPiece> {
+    pub async fn run(&self) {
         let config = self.config.clone();
         let host_id = self.host_id.clone();
         let task_id = self.task_id.clone();
@@ -107,7 +133,11 @@ impl PieceCollector {
         let interested_pieces = self.interested_pieces.clone();
         let collected_pieces = self.collected_pieces.clone();
         let collected_piece_timeout = self.config.download.piece_timeout;
-        let (collected_piece_tx, collected_piece_rx) = mpsc::channel(10 * 1024);
+        let waited_pieces = self.waited_queues.clone();
+
+        // register
+        self.register_parents();
+
         tokio::spawn(
             async move {
                 Self::collect_from_parents(
@@ -117,7 +147,7 @@ impl PieceCollector {
                     parents,
                     interested_pieces,
                     collected_pieces,
-                    collected_piece_tx,
+                    waited_pieces,
                     collected_piece_timeout,
                 )
                 .await
@@ -127,8 +157,6 @@ impl PieceCollector {
             }
             .in_current_span(),
         );
-
-        collected_piece_rx
     }
 
     /// collect_from_parents collects pieces from parents.
@@ -140,23 +168,21 @@ impl PieceCollector {
         task_id: &str,
         parents: Vec<CollectedParent>,
         interested_pieces: Vec<metadata::Piece>,
-        collected_pieces: Arc<DashMap<u32, String>>,
-        collected_piece_tx: Sender<CollectedPiece>,
+        collected_pieces: Arc<DashSet<u32>>,
+        waited_pieces: Arc<Vec<Arc<SegQueue<CollectedPiece>>>>,
         collected_piece_timeout: Duration,
     ) -> Result<()> {
         // Create a task to collect pieces from peers.
         let mut join_set = JoinSet::new();
-        for parent in parents.iter() {
+        for (i, parent) in parents.iter().enumerate() {
             #[allow(clippy::too_many_arguments)]
             async fn sync_pieces(
                 config: Arc<Config>,
                 host_id: String,
                 task_id: String,
                 parent: CollectedParent,
-                parents: Vec<CollectedParent>,
                 interested_pieces: Vec<metadata::Piece>,
-                collected_pieces: Arc<DashMap<u32, String>>,
-                collected_piece_tx: Sender<CollectedPiece>,
+                waited_queue: Arc<SegQueue<CollectedPiece>>,
                 collected_piece_timeout: Duration,
             ) -> Result<CollectedParent> {
                 info!("sync pieces from parent {}", parent.id);
@@ -200,42 +226,19 @@ impl PieceCollector {
                     out_stream.try_next().await.or_err(ErrorType::StreamError)?
                 {
                     let message = message?;
-                    let mut parent_id =
-                        match collected_pieces.try_get_mut(&message.number).try_unwrap() {
-                            Some(parent_id) => parent_id,
-                            None => continue,
-                        };
-                    parent_id.push_str(&parent.id);
 
                     info!(
                         "received piece {}-{} metadata from parent {}",
                         task_id, message.number, parent.id
                     );
 
-                    let parent = parents
-                        .iter()
-                        .find(|parent| parent.id == parent_id.as_str())
-                        .ok_or_else(|| {
-                            error!("parent {} not found", parent_id.as_str());
-                            Error::InvalidPeer(parent_id.clone())
-                        })?;
-
-                    collected_piece_tx
-                        .send(CollectedPiece {
-                            number: message.number,
-                            length: message.length,
-                            parent: parent.clone(),
-                        })
-                        .await
-                        .inspect_err(|err| {
-                            error!("send CollectedPiece failed: {}", err);
-                        })?;
-
-                    // Release the lock of the piece with parent_id.
-                    drop(parent_id);
-
-                    // Remove the piece from collected_pieces.
-                    collected_pieces.remove(&message.number);
+                    // add piece to waited_piece
+                    let new_piece = CollectedPiece {
+                        number: message.number,
+                        length: message.length,
+                        parent: parent.clone(),
+                    };
+                    waited_queue.push(new_piece);
                 }
 
                 Ok(parent)
@@ -247,10 +250,8 @@ impl PieceCollector {
                     host_id.to_string(),
                     task_id.to_string(),
                     parent.clone(),
-                    parents.clone(),
                     interested_pieces.clone(),
-                    collected_pieces.clone(),
-                    collected_piece_tx.clone(),
+                    waited_pieces[i].clone(),
                     collected_piece_timeout,
                 )
                 .in_current_span(),
@@ -279,5 +280,78 @@ impl PieceCollector {
         }
 
         Ok(())
+    }
+
+    #[instrument(skip_all)]
+    pub async fn next_piece(&mut self) -> CollectedPiece {
+        let mut piece = CollectedPiece {
+            number: 0,
+            length: 0,
+            parent: CollectedParent {
+                id: "".to_string(),
+                host: None,
+            },
+        };
+        let waited_pieces = self.waited_queues.clone();
+        let collected_pieces = self.collected_pieces.clone();
+        let parent_selector = self.parent_selector.clone();
+        let parent_ids = self.parent_id.clone();
+
+        let mut find = false;
+
+        if let Ok(id) = parent_selector.optimal_parent(self.task_id.clone()) {
+            let idx = *parent_ids.get(&id).unwrap();
+            let queue = waited_pieces[idx].clone();
+            while let Some(cp) = queue.pop() {
+                if collected_pieces.contains(&cp.number) {
+                    piece = cp;
+                    find = true;
+                    break;
+                }
+            }
+            if find {
+                collected_pieces.remove(&piece.number);
+                debug!("collect piece {} by parent selector", piece.number);
+                return piece;
+            }
+        }
+
+        let start_idx = self.next_idx;
+        loop {
+            let queue = waited_pieces[start_idx].clone();
+            self.next_idx = (self.next_idx + 1) % self.parents.len();
+            while let Some(cp) = queue.pop() {
+                if collected_pieces.contains(&cp.number) {
+                    piece = cp;
+                    find = true;
+                    break;
+                }
+            }
+            if find {
+                break;
+            } else if self.next_idx == start_idx {
+                info!("piece collector sleep");
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        }
+        collected_pieces.insert(piece.number);
+        debug!("collect piece {} by default", piece.number);
+        piece
+    }
+
+    fn register_parents(&self) {
+        self.parent_selector
+            .clone()
+            .register_parents(self.task_id.clone(), &self.parents.clone());
+    }
+
+    pub fn unregister_parents(&self) {
+        self.parent_selector
+            .clone()
+            .unregister_parents(self.task_id.clone());
+    }
+
+    pub fn finished(&self) -> bool {
+        self.collected_pieces.is_empty()
     }
 }

@@ -14,7 +14,9 @@
  * limitations under the License.
  */
 
+use super::*;
 use crate::grpc::{scheduler::SchedulerClient, REQUEST_TIMEOUT};
+use crate::resource::parent_selector::ParentSelector;
 use dragonfly_api::common::v2::{
     PersistentCachePeer, PersistentCacheTask as CommonPersistentCacheTask, Piece, TrafficType,
 };
@@ -49,15 +51,13 @@ use std::time::Duration;
 use tokio::io::AsyncReadExt;
 use tokio::sync::{
     mpsc::{self, Sender},
-    Semaphore,
+    OwnedSemaphorePermit, Semaphore,
 };
 use tokio::task::JoinSet;
 use tokio::time::sleep;
 use tokio_stream::{wrappers::ReceiverStream, StreamExt};
 use tonic::{Request, Status};
 use tracing::{debug, error, info, instrument, Instrument};
-
-use super::*;
 
 /// PersistentCacheTask represents a persistent cache task manager.
 pub struct PersistentCacheTask {
@@ -75,6 +75,9 @@ pub struct PersistentCacheTask {
 
     /// piece is the piece manager.
     pub piece: Arc<piece::Piece>,
+
+    /// parent_selector is the parent selector.
+    pub parent_selector: Arc<ParentSelector>,
 }
 
 /// PersistentCacheTask is the implementation of PersistentCacheTask.
@@ -87,6 +90,7 @@ impl PersistentCacheTask {
         storage: Arc<Storage>,
         scheduler_client: Arc<SchedulerClient>,
         backend_factory: Arc<BackendFactory>,
+        parent_selector: Arc<ParentSelector>,
     ) -> ClientResult<Self> {
         let piece = piece::Piece::new(
             config.clone(),
@@ -102,6 +106,7 @@ impl PersistentCacheTask {
             storage,
             scheduler_client,
             piece: piece.clone(),
+            parent_selector: parent_selector.clone(),
         })
     }
 
@@ -796,7 +801,7 @@ impl PersistentCacheTask {
         in_stream_tx: Sender<AnnouncePersistentCachePeerRequest>,
     ) -> ClientResult<Vec<metadata::Piece>> {
         // Initialize the piece collector.
-        let piece_collector = piece_collector::PieceCollector::new(
+        let mut piece_collector = piece_collector::PieceCollector::new(
             self.config.clone(),
             host_id,
             task.id.as_str(),
@@ -809,8 +814,9 @@ impl PersistentCacheTask {
                     host: peer.host.clone(),
                 })
                 .collect(),
+            self.parent_selector.clone(),
         );
-        let mut piece_collector_rx = piece_collector.run().await;
+        piece_collector.run().await;
 
         // Initialize the join set.
         let mut join_set = JoinSet::new();
@@ -819,7 +825,8 @@ impl PersistentCacheTask {
         ));
 
         // Download the pieces from the parents.
-        while let Some(collect_piece) = piece_collector_rx.recv().await {
+        while !piece_collector.finished() {
+            let collect_piece = piece_collector.next_piece().await;
             async fn download_from_parent(
                 task_id: String,
                 host_id: String,
@@ -830,13 +837,10 @@ impl PersistentCacheTask {
                 parent: piece_collector::CollectedParent,
                 piece_manager: Arc<super::piece::Piece>,
                 storage: Arc<Storage>,
-                semaphore: Arc<Semaphore>,
+                permit: Arc<OwnedSemaphorePermit>,
                 download_progress_tx: Sender<Result<DownloadPersistentCacheTaskResponse, Status>>,
                 in_stream_tx: Sender<AnnouncePersistentCachePeerRequest>,
             ) -> ClientResult<metadata::Piece> {
-                // Limit the concurrent download count.
-                let _permit = semaphore.acquire().await.unwrap();
-
                 let piece_id = storage.piece_id(task_id.as_str(), number);
                 info!(
                     "start to download piece {} from parent {:?}",
@@ -954,9 +958,11 @@ impl PersistentCacheTask {
                     piece_id, metadata.parent_id
                 );
 
+                drop(permit);
                 Ok(metadata)
             }
 
+            let permit = semaphore.clone().acquire_owned().await.unwrap();
             join_set.spawn(
                 download_from_parent(
                     task.id.clone(),
@@ -968,7 +974,7 @@ impl PersistentCacheTask {
                     collect_piece.parent.clone(),
                     self.piece.clone(),
                     self.storage.clone(),
-                    semaphore.clone(),
+                    permit.into(),
                     download_progress_tx.clone(),
                     in_stream_tx.clone(),
                 )
@@ -1031,6 +1037,7 @@ impl PersistentCacheTask {
                 }
             }
         }
+        piece_collector.unregister_parents();
         Ok(finished_pieces)
     }
 
