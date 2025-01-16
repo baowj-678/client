@@ -206,9 +206,9 @@ parentSelector:
   interval: 3s
   transmittedLimit: 1GiB
   hosts: # for test
-  - ip: 172.18.0.11 # seed
-    port: 4000
-    bandwidth: 1500MiB
+#  - ip: 172.18.0.11 # seed
+#    port: 4000
+#    bandwidth: 300MiB
   - ip: 172.18.0.12 # peer
     port: 4000
     bandwidth: 300MiB

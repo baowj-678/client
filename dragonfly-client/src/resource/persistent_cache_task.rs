@@ -14,7 +14,9 @@
  * limitations under the License.
  */
 
+use super::*;
 use crate::grpc::{scheduler::SchedulerClient, REQUEST_TIMEOUT};
+use crate::resource::parent_status_syncer::ParentStatusSyncer;
 use dragonfly_api::common::v2::{
     PersistentCachePeer, PersistentCacheTask as CommonPersistentCacheTask, Piece, TrafficType,
 };
@@ -46,14 +48,15 @@ use dragonfly_client_util::id_generator::IDGenerator;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{mpsc::{self, Sender}, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{
+    mpsc::{self, Sender},
+    OwnedSemaphorePermit, Semaphore,
+};
 use tokio::task::JoinSet;
 use tokio::time::sleep;
 use tokio_stream::{wrappers::ReceiverStream, StreamExt};
 use tonic::{Request, Status};
 use tracing::{error, info, instrument, Instrument};
-use crate::resource::parent_status_syncer::ParentStatusSyncer;
-use super::*;
 
 /// PersistentCacheTask represents a persistent cache task manager.
 pub struct PersistentCacheTask {
@@ -71,7 +74,7 @@ pub struct PersistentCacheTask {
 
     /// piece is the piece manager.
     pub piece: Arc<piece::Piece>,
-    
+
     parent_status_syncer: Arc<ParentStatusSyncer>,
 }
 
@@ -827,7 +830,7 @@ impl PersistentCacheTask {
 
         // Download the pieces from the remote peers.
         while interested_pieces.len() > piece_collector.collected_pieces_num() {
-            let collect_piece = tokio::task::block_in_place(||piece_collector.next_piece());
+            let collect_piece = tokio::task::block_in_place(|| piece_collector.next_piece());
             async fn download_from_remote_peer(
                 task_id: String,
                 host_id: String,

@@ -1,15 +1,15 @@
-use std::net::{IpAddr};
-use std::sync::{Arc};
-use std::thread;
-use std::time::{Duration, SystemTime};
 use bytesize::ByteSize;
 use dashmap::DashMap;
-use sysinfo::{Networks};
-use tokio::time::sleep;
-use tracing::{info, instrument};
-use dragonfly_client_config::dfdaemon::{Config};
+use dragonfly_client_config::dfdaemon::Config;
 use pnet::datalink;
 use pnet::ipnetwork::IpNetwork;
+use std::net::IpAddr;
+use std::sync::Arc;
+use std::thread;
+use std::time::{Duration, SystemTime};
+use sysinfo::Networks;
+use tokio::time::sleep;
+use tracing::{info, instrument};
 
 pub struct Network {
     interface_to_ips: DashMap<String, Vec<IpNetwork>>,
@@ -31,21 +31,16 @@ pub struct ParentStatusServer {
 }
 
 impl ParentStatusServer {
-    pub fn new(
-        config: Arc<Config>
-    ) -> Result<Self, String> {
-        Ok(
-            Self {
-                config: config.clone(),
-                enable: config.parent_selector.enable.clone(),
-                server_enable: config.parent_selector.server_enable.clone(),
-                interval: config.parent_selector.interval.clone(),
-                networks: Arc::new(
-                    Network {
-                        interface_to_ips: Default::default(),
-                        transmitted_reserved: Default::default(),
-                    }
-                )
+    pub fn new(config: Arc<Config>) -> Result<Self, String> {
+        Ok(Self {
+            config: config.clone(),
+            enable: config.parent_selector.enable.clone(),
+            server_enable: config.parent_selector.server_enable.clone(),
+            interval: config.parent_selector.interval.clone(),
+            networks: Arc::new(Network {
+                interface_to_ips: Default::default(),
+                transmitted_reserved: Default::default(),
+            }),
         })
     }
 
@@ -67,16 +62,22 @@ impl ParentStatusServer {
             info!("[baowj] parent_status_server refresh");
             // sleep
             sleep(self.interval).await;
-            
+
             // Update network
             networks.refresh();
             let new_time = SystemTime::now();
-            let interval = new_time.duration_since(last_refresh_time).unwrap().as_millis()  as u64;
+            let interval = new_time
+                .duration_since(last_refresh_time)
+                .unwrap()
+                .as_millis() as u64;
             last_refresh_time = new_time;
 
             for (interface, data) in &networks {
                 // bit per sec
-                network.transmitted_reserved.insert(interface.clone(), ByteSize(transmitted_limited.as_u64() - data.transmitted() * 1000  / interval));
+                network.transmitted_reserved.insert(
+                    interface.clone(),
+                    ByteSize(transmitted_limited.as_u64() - data.transmitted() * 1000 / interval),
+                );
             }
         }
     }
@@ -86,15 +87,17 @@ impl ParentStatusServer {
         let interfaces = datalink::interfaces();
         let network = self.networks.clone();
         for interface in interfaces {
-            network.interface_to_ips.insert(interface.name, interface.ips);
+            network
+                .interface_to_ips
+                .insert(interface.name, interface.ips);
         }
-        info!("[baowj] init interface and ip: {:?}", network.interface_to_ips);
+        info!(
+            "[baowj] init interface and ip: {:?}",
+            network.interface_to_ips
+        );
     }
 
-    pub fn status(
-        &self,
-        ip: IpAddr
-    ) -> Result<ByteSize, String> {
+    pub fn status(&self, ip: IpAddr) -> Result<ByteSize, String> {
         let mut status = ByteSize(0u64);
         // get network
         let network = self.networks.clone();
@@ -114,21 +117,22 @@ impl ParentStatusServer {
         }
         match interface_name {
             None => {}
-            Some(name) => {
-                match network.transmitted_reserved.get(&name) {
-                    None => {
-                        info!("[baowj] failed to get reserved transmitted of interface: {}", name);
-                    }
-                    Some(t) => {
-                        status = t.value().clone();
-                    }
+            Some(name) => match network.transmitted_reserved.get(&name) {
+                None => {
+                    info!(
+                        "[baowj] failed to get reserved transmitted of interface: {}",
+                        name
+                    );
                 }
-            }
+                Some(t) => {
+                    status = t.value().clone();
+                }
+            },
         }
-        info!("[baowj] parent_status_server status, ip: {}, status:{:?}", ip, status);
+        info!(
+            "[baowj] parent_status_server status, ip: {}, status:{:?}",
+            ip, status
+        );
         Ok(status)
     }
-
 }
-
-

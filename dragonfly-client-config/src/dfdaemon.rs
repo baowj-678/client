@@ -391,16 +391,14 @@ impl Default for HostStatus {
 pub struct ParentSelector {
     #[serde(default = "default_hosts")]
     pub hosts: Vec<HostStatus>,
-    
+
     pub enable: bool,
-    
+
     pub server_enable: bool,
-    
+
     pub syncer_enable: bool,
 
-    #[serde(
-        with = "humantime_serde"
-    )]
+    #[serde(with = "humantime_serde")]
     pub interval: Duration,
 
     /// received_limit is the rate limit of the received speed in GiB/Mib/Kib per second.

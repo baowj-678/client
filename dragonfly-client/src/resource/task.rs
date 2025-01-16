@@ -14,11 +14,13 @@
  * limitations under the License.
  */
 
+use super::*;
 use crate::grpc::{scheduler::SchedulerClient, REQUEST_TIMEOUT};
 use crate::metrics::{
     collect_backend_request_failure_metrics, collect_backend_request_finished_metrics,
     collect_backend_request_started_metrics,
 };
+use crate::resource::parent_status_syncer::ParentStatusSyncer;
 use dragonfly_api::common::v2::{
     Download, ObjectStorage, Peer, Piece, Range, Task as CommonTask, TrafficType,
 };
@@ -52,14 +54,15 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tokio::sync::{mpsc::{self, Sender}, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{
+    mpsc::{self, Sender},
+    OwnedSemaphorePermit, Semaphore,
+};
 use tokio::task::JoinSet;
 use tokio::time::sleep;
 use tokio_stream::{wrappers::ReceiverStream, StreamExt};
 use tonic::{Request, Status};
 use tracing::{error, info, instrument, Instrument};
-use crate::resource::parent_status_syncer::ParentStatusSyncer;
-use super::*;
 
 /// Task represents a task manager.
 pub struct Task {
@@ -80,7 +83,7 @@ pub struct Task {
 
     /// piece is the piece manager.
     pub piece: Arc<piece::Piece>,
-    
+
     parent_status_syncer: Arc<ParentStatusSyncer>,
 }
 
@@ -941,8 +944,12 @@ impl Task {
 
         // Download the pieces from the remote peers.
         while interested_pieces.len() > piece_collector.collected_pieces_num() {
-            let collect_piece =  tokio::task::block_in_place(||piece_collector.next_piece());
-            info!("[baowj] download piece {}, parent: {}", collect_piece.number, collect_piece.parent.host.clone().unwrap().ip);
+            let collect_piece = tokio::task::block_in_place(|| piece_collector.next_piece());
+            info!(
+                "[baowj] download piece {}, parent: {}",
+                collect_piece.number,
+                collect_piece.parent.host.clone().unwrap().ip
+            );
             if interrupt.load(Ordering::SeqCst) {
                 // If the interrupt is true, break the collector loop.
                 info!("interrupt the piece collector");
@@ -1066,7 +1073,7 @@ impl Task {
                     storage.piece_id(task_id.as_str(), metadata.number),
                     metadata.parent_id
                 );
-                
+
                 let mut finished_pieces = finished_pieces.lock().unwrap();
                 finished_pieces.push(metadata.clone());
 
@@ -1095,7 +1102,7 @@ impl Task {
                 .in_current_span(),
             );
         }
-        
+
         // Wait for the pieces to be downloaded.
         while let Some(message) = join_set
             .join_next()

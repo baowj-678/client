@@ -14,9 +14,9 @@
  * limitations under the License.
  */
 
+pub mod parent_status_server;
+pub mod parent_status_syncer;
 pub mod persistent_cache_task;
 pub mod piece;
 pub mod piece_collector;
 pub mod task;
-pub mod parent_status_syncer;
-pub mod parent_status_server;
