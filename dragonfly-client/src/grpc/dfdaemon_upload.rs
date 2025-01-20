@@ -30,7 +30,7 @@ use dragonfly_api::dfdaemon::v2::{
     dfdaemon_upload_server::{DfdaemonUpload, DfdaemonUploadServer as DfdaemonUploadGRPCServer},
     DeletePersistentCacheTaskRequest, DeleteTaskRequest, DownloadPersistentCacheTaskRequest,
     DownloadPersistentCacheTaskResponse, DownloadPieceRequest, DownloadPieceResponse,
-    DownloadTaskRequest, DownloadTaskResponse, ParentStatusRequest, ParentStatusResponse,
+    DownloadTaskRequest, DownloadTaskResponse, SyncParentStatusRequest, SyncParentStatusResponse,
     StatPersistentCacheTaskRequest, StatTaskRequest, SyncPiecesRequest, SyncPiecesResponse,
 };
 use dragonfly_api::errordetails::v2::Backend;
@@ -1084,8 +1084,8 @@ impl DfdaemonUpload for DfdaemonUploadServerHandler {
 
     async fn sync_parent_status(
         &self,
-        request: Request<ParentStatusRequest>,
-    ) -> Result<Response<ParentStatusResponse>, Status> {
+        request: Request<SyncParentStatusRequest>,
+    ) -> Result<Response<SyncParentStatusResponse>, Status> {
         match request.remote_addr() {
             Some(addr) => {
                 info!("[baowj] sync_parent_status got ip: {}", addr);
@@ -1096,8 +1096,8 @@ impl DfdaemonUpload for DfdaemonUploadServerHandler {
                             "[baowj] sync_parent_status result, transmitted_reserved: {}",
                             result
                         );
-                        Ok(Response::new(ParentStatusResponse {
-                            status: result.as_u64(),
+                        Ok(Response::new(SyncParentStatusResponse {
+                            state: result.as_u64(),
                         }))
                     }
                     Err(error) => {
@@ -1288,8 +1288,8 @@ impl DfdaemonUploadClient {
     #[instrument(skip_all)]
     pub async fn sync_parent_status(
         &self,
-        request: ParentStatusRequest,
-    ) -> ClientResult<tonic::Response<ParentStatusResponse>> {
+        request: SyncParentStatusRequest,
+    ) -> ClientResult<tonic::Response<SyncParentStatusResponse>> {
         let request = Self::make_request(request);
         let response = self.client.clone().sync_parent_status(request).await?;
         Ok(response)

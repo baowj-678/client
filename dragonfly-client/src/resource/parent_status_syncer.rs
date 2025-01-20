@@ -3,7 +3,7 @@ use crate::resource::piece_collector::CollectedParent;
 use bytesize::ByteSize;
 use dashmap::DashMap;
 use dragonfly_api::common::v2::Host;
-use dragonfly_api::dfdaemon::v2::ParentStatusRequest;
+use dragonfly_api::dfdaemon::v2::SyncParentStatusRequest;
 use dragonfly_client_config::dfdaemon::Config;
 use dragonfly_client_util::id_generator::IDGenerator;
 use std::str::FromStr;
@@ -161,13 +161,13 @@ impl ParentStatusSyncer {
             );
             match client.await {
                 Ok(client) => {
-                    let request = ParentStatusRequest {
+                    let request = SyncParentStatusRequest {
                         host_id: host_id.clone(),
                         peer_id: peer_id.clone(),
                     };
                     match client.sync_parent_status(request).await {
                         Ok(response) => {
-                            let response = response.into_inner().status;
+                            let response = response.into_inner().state;
                             let mutex = mutex.read().unwrap();
                             status.entry(parent.host.unwrap().ip).and_modify(|v| {
                                 if !v.fixed {
