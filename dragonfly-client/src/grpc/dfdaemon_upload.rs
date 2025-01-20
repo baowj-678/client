@@ -935,60 +935,70 @@ impl DfdaemonUpload for DfdaemonUploadServerHandler {
 
         // Initialize stream channel.
         let (out_stream_tx, out_stream_rx) = mpsc::channel(1);
-        // Start the host info update loop.
-        let mut networks = Networks::new_with_refreshed_list();
-        let mut last_refresh_time = SystemTime::now();
-        tokio::time::sleep(FIRST_REFRESH_INTERVAL).await;
 
         info!("start sending host info to host {}", remote_host_id);
-        loop {
-            let mut host = Host::default();
+        tokio::spawn(
+            async move {
+                // Start the host info update loop.
+                let mut networks = Networks::new_with_refreshed_list();
+                let mut last_refresh_time = SystemTime::now();
+                tokio::time::sleep(FIRST_REFRESH_INTERVAL).await;
 
-            // Get network information by request ip
-            let mut network = Network::default();
+                loop {
+                    let mut host = Host::default();
 
-            // Refresh network information.
-            networks.refresh();
-            let new_time = SystemTime::now();
-            let interval = new_time
-                .duration_since(last_refresh_time)
-                .unwrap()
-                .as_millis() as u64;
-            last_refresh_time = new_time;
+                    // Get network information by request ip
+                    let mut network = Network {
+                        upload_rate: request_interface_speed,
+                        ..Default::default()
+                    };
 
-            // Get interface available bandwidth.
-            if let Some(request_interface) = request_interface.clone() {
-                for (interface, data) in &networks {
-                    if *interface == request_interface {
-                        network.upload_rate =
-                            (request_interface_speed - data.transmitted()) * 1000 / interval;
-                        debug!(
-                            "refresh interface {} available bandwidth to {}",
-                            interface,
-                            ByteSize(network.upload_rate)
-                        );
+                    // Refresh network information.
+                    networks.refresh();
+                    let new_time = SystemTime::now();
+                    let interval = new_time
+                        .duration_since(last_refresh_time)
+                        .unwrap()
+                        .as_millis() as u64;
+                    last_refresh_time = new_time;
+
+                    // Get interface available bandwidth.
+                    if let Some(request_interface) = request_interface.clone() {
+                        for (interface, data) in &networks {
+                            if *interface == request_interface
+                                && network.upload_rate > data.transmitted() * 1000 / interval
+                            {
+                                network.upload_rate -= data.transmitted() * 1000 / interval;
+                                info!(
+                                    "refresh interface {} available bandwidth to {}",
+                                    interface,
+                                    ByteSize(network.upload_rate)
+                                );
+                            }
+                        }
                     }
+                    host.network = Some(network);
+
+                    match out_stream_tx.send(Ok(host.clone())).await {
+                        Ok(_) => {
+                            info!("sync host info to remote host {}", remote_host_id.as_str());
+                        }
+                        Err(err) => {
+                            info!(
+                                "connection broken from remote host {}, err: {}",
+                                remote_host_id, err
+                            );
+                            drop(out_stream_tx);
+                            break;
+                        }
+                    };
+
+                    // Wait for the piece to be finished.
+                    tokio::time::sleep(DEFAULT_REFRESH_INTERVAL).await;
                 }
             }
-            host.network = Some(network);
-
-            match out_stream_tx.send(Ok(host.clone())).await {
-                Ok(_) => {
-                    debug!("sync host info to remote host {}", remote_host_id.as_str());
-                }
-                Err(err) => {
-                    info!(
-                        "connection broken from remote host {}, err: {}",
-                        remote_host_id, err
-                    );
-                    drop(out_stream_tx);
-                    break;
-                }
-            };
-
-            // Wait for the piece to be finished.
-            tokio::time::sleep(DEFAULT_REFRESH_INTERVAL).await;
-        }
+            .in_current_span(),
+        );
         Ok(Response::new(ReceiverStream::new(out_stream_rx)))
     }
 

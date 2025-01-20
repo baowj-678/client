@@ -19,7 +19,7 @@ use crate::resource::piece_collector::CollectedParent;
 use crate::shutdown::Shutdown;
 use bytesize::ByteSize;
 use dashmap::DashMap;
-use dragonfly_api::common::v2::{Host};
+use dragonfly_api::common::v2::Host;
 use dragonfly_api::dfdaemon::v2::SyncHostRequest;
 use dragonfly_client_config::dfdaemon::Config;
 use dragonfly_client_core::error::DFError::TaskNotFound;
@@ -136,15 +136,18 @@ impl TaskParentSelector {
             sum += 0.1f64;
 
             // Update probability.
-            self.probability.iter_mut().enumerate().for_each(|(idx, p)| {
-                if parent_available_capacity[idx] == 0f64 {
-                    *p = avg / sum;
-                } else {
-                    *p = parent_available_capacity[idx] / sum;
-                }
-            });
+            self.probability
+                .iter_mut()
+                .enumerate()
+                .for_each(|(idx, p)| {
+                    if parent_available_capacity[idx] == 0f64 {
+                        *p = avg / sum;
+                    } else {
+                        *p = parent_available_capacity[idx] / sum;
+                    }
+                });
             debug!("update probability to {:?}", self.probability);
-            info!("[baowj]update probability to {:?}", self.probability);
+            info!("[baowj] update probability to {:?}", self.probability);
             // Reset last_sync_time.
             self.last_sync_time = now_time;
         }
@@ -165,8 +168,8 @@ impl TaskParentSelector {
     /// available_capacity return the available capacity of the host.
     fn available_capacity(host: Host) -> Result<f64> {
         match host.network {
-            None => { Ok(DEFAULT_AVAILABLE_CAPACITY) }
-            Some(network) => { Ok(network.upload_rate as f64) }
+            None => Ok(DEFAULT_AVAILABLE_CAPACITY),
+            Some(network) => Ok(network.upload_rate as f64),
         }
     }
 }
@@ -218,6 +221,7 @@ impl ParentSelector {
         info!("[baowj] register");
         // If not enable.
         if !self.config.download.parent_selector.enable {
+            info!("[baowj] parent selector disabled");
             return;
         }
 
@@ -303,7 +307,6 @@ impl ParentSelector {
             error!("peer {:?} host is empty", parent);
             Error::InvalidPeer(parent.id.clone())
         })?;
-
         // Create a dfdaemon upload client.
         let dfdaemon_upload_client =
             DfdaemonUploadClient::new(config, format!("http://{}:{}", host.ip, host.port))
@@ -315,6 +318,7 @@ impl ParentSelector {
                     );
                 })
                 .unwrap();
+        info!("[baowj] sync_host get client");
 
         let response = dfdaemon_upload_client
             .sync_host(SyncHostRequest { host_id, peer_id })
@@ -323,7 +327,7 @@ impl ParentSelector {
                 error!("sync host info from parent {} failed: {}", parent.id, err);
             })
             .unwrap();
-
+        info!("[baowj] sync_host get response");
         // If the response repeating timeout exceeds the piece download timeout,
         // the stream will return error.
         let out_stream = response.into_inner().timeout(sync_host_timeout);
@@ -339,6 +343,10 @@ impl ParentSelector {
             // Deal with massage.
             match message {
                 Ok(message) => {
+                    info!(
+                        "[baowj] sync_host info: {:?} from parent {}",
+                        message, parent.id
+                    );
                     // Update the parent host information for all tasks associated with this parent.
                     tasks.iter_mut().for_each(|task| {
                         if let Some(mut parent_info) = task.parents.get_mut(&parent.id) {
@@ -367,7 +375,7 @@ impl ParentSelector {
                 debug!("get optimal parent {}", parent_id);
                 info!("[baowj] get optimal parent {}", parent_id);
                 Ok(parent_id)
-            },
+            }
         }
     }
 }
