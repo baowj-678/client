@@ -103,10 +103,10 @@ impl TaskParentSelector {
         // Lazy refresh probability.
         if now_time.duration_since(self.last_sync_time).unwrap() > self.sync_interval {
             let mut parent_available_capacity = Vec::with_capacity(self.probability.len());
-            let mut count = 0;
             let mut sum = 0f64;
             let parent_map = self.parents.clone();
 
+            // Update parent network capacity.
             self.parent_list
                 .iter()
                 .for_each(|parent_id| match parent_map.get(parent_id) {
@@ -117,36 +117,26 @@ impl TaskParentSelector {
                         Ok(capacity) => {
                             parent_available_capacity.push(capacity);
                             sum += capacity;
-                            count += 1;
                         }
                         Err(_) => {
                             parent_available_capacity.push(0f64);
                         }
                     },
                 });
-            // Calc average available capacity.
-            let mut avg = DEFAULT_AVAILABLE_CAPACITY;
-            if count != 0 {
-                avg = sum / count as f64;
-            }
-            // Calc sum.
-            sum += avg * (parent_available_capacity.len() - count) as f64;
-
-            // Prevent division by 0
-            sum += 0.1f64;
+            let count = self.parent_list.len();
 
             // Update probability.
             self.probability
                 .iter_mut()
                 .enumerate()
                 .for_each(|(idx, p)| {
-                    if parent_available_capacity[idx] == 0f64 {
-                        *p = avg / sum;
-                    } else {
+                    if sum > 0f64 {
                         *p = parent_available_capacity[idx] / sum;
+                    } else {
+                        *p = 1f64 / count as f64;
                     }
                 });
-            debug!("update probability to {:?}", self.probability);
+            info!("[baowj] update parent capacity to {:?}", parent_available_capacity);
             info!("[baowj] update probability to {:?}", self.probability);
             // Reset last_sync_time.
             self.last_sync_time = now_time;

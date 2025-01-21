@@ -13,7 +13,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 use super::interceptor::TracingInterceptor;
 use crate::metrics::{
     collect_delete_task_failure_metrics, collect_delete_task_started_metrics,
@@ -873,7 +872,7 @@ impl DfdaemonUpload for DfdaemonUploadServerHandler {
         request: Request<SyncHostRequest>,
     ) -> Result<Response<Self::SyncHostStream>, Status> {
         /// DEFAULT_INTERFACE_SPEED is the default speed for interfaces.
-        const DEFAULT_INTERFACE_SPEED: ByteSize = ByteSize::mb(10000);
+        const DEFAULT_INTERFACE_SPEED: ByteSize = ByteSize::mb(10000 / 8);
         /// FIRST_REFRESH_INTERVAL is the interval between the first refresh of the network.
         const FIRST_REFRESH_INTERVAL: Duration = Duration::from_millis(100);
         /// DEFAULT_REFRESH_INTERVAL is the default interval for refreshing the network.
@@ -919,11 +918,11 @@ impl DfdaemonUpload for DfdaemonUploadServerHandler {
 
             // Get speed of interface.
             if let Some(interface) = request_interface.clone() {
-                let speed_path = format!("/sys/class/net/{}/speed", interface);
+                let speed_path = format!("/net/{}/speed", interface);
                 let content = fs::read_to_string(speed_path).unwrap_or_default();
                 if let Ok(speed) = content.trim().parse::<u64>() {
                     // Convert Mib/Sec to bit/Sec.
-                    debug!(
+                    info!(
                         "interface {} bandwidth is {}",
                         &interface,
                         ByteSize::mb(speed)
@@ -965,15 +964,18 @@ impl DfdaemonUpload for DfdaemonUploadServerHandler {
                     // Get interface available bandwidth.
                     if let Some(request_interface) = request_interface.clone() {
                         for (interface, data) in &networks {
-                            if *interface == request_interface
-                                && network.upload_rate > data.transmitted() * 1000 / interval
-                            {
-                                network.upload_rate -= data.transmitted() * 1000 / interval;
+                            if *interface == request_interface {
+                                if network.upload_rate < data.transmitted() * 1000 / interval {
+                                    network.upload_rate = 0;
+                                } else {
+                                    network.upload_rate -= data.transmitted() * 1000 / interval;
+                                }
                                 info!(
                                     "refresh interface {} available bandwidth to {}",
                                     interface,
                                     ByteSize(network.upload_rate)
                                 );
+                                break;
                             }
                         }
                     }
@@ -981,7 +983,11 @@ impl DfdaemonUpload for DfdaemonUploadServerHandler {
 
                     match out_stream_tx.send(Ok(host.clone())).await {
                         Ok(_) => {
-                            info!("sync host info to remote host {}", remote_host_id.as_str());
+                            info!(
+                                "sync host info to remote host {}, info {:?}",
+                                remote_host_id.as_str(),
+                                host
+                            );
                         }
                         Err(err) => {
                             info!(
