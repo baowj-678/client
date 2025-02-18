@@ -13,8 +13,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 use crate::grpc::dfdaemon_upload::DfdaemonUploadClient;
+use crate::resource::parent_selector::ParentSelector;
 use dashmap::DashMap;
 use dragonfly_api::common::v2::Host;
 use dragonfly_api::dfdaemon::v2::{SyncPersistentCachePiecesRequest, SyncPiecesRequest};
@@ -69,6 +69,12 @@ pub struct PieceCollector {
 
     /// collected_pieces is the pieces collected from peers.
     collected_pieces: Arc<DashMap<u32, String>>,
+
+    /// collected_parents is the parents for pieces collected from peers.
+    collected_parents: Arc<DashMap<u32, Vec<CollectedParent>>>,
+
+    /// parent_selector is used to select optimal parent for piece.
+    parent_selector: Arc<ParentSelector>,
 }
 
 /// PieceCollector is used to collect pieces from peers.
@@ -81,8 +87,10 @@ impl PieceCollector {
         task_id: &str,
         interested_pieces: Vec<metadata::Piece>,
         parents: Vec<CollectedParent>,
+        parent_selector: Arc<ParentSelector>,
     ) -> Self {
         let collected_pieces = Arc::new(DashMap::with_capacity(interested_pieces.len()));
+        let collected_parents = Arc::new(DashMap::with_capacity(interested_pieces.len()));
         for interested_piece in &interested_pieces {
             collected_pieces.insert(interested_piece.number, String::new());
         }
@@ -94,6 +102,8 @@ impl PieceCollector {
             parents,
             interested_pieces,
             collected_pieces,
+            collected_parents,
+            parent_selector,
         }
     }
 
@@ -106,6 +116,7 @@ impl PieceCollector {
         let parents = self.parents.clone();
         let interested_pieces = self.interested_pieces.clone();
         let collected_pieces = self.collected_pieces.clone();
+        let collected_parents = self.collected_parents.clone();
         let collected_piece_timeout = self.config.download.piece_timeout;
         let (collected_piece_tx, collected_piece_rx) = mpsc::channel(10 * 1024);
         tokio::spawn(
@@ -116,6 +127,7 @@ impl PieceCollector {
                     &task_id,
                     parents,
                     interested_pieces,
+                    collected_parents,
                     collected_pieces,
                     collected_piece_tx,
                     collected_piece_timeout,
@@ -140,6 +152,7 @@ impl PieceCollector {
         task_id: &str,
         parents: Vec<CollectedParent>,
         interested_pieces: Vec<metadata::Piece>,
+        collected_parents: Arc<DashMap<u32, Vec<CollectedParent>>>,
         collected_pieces: Arc<DashMap<u32, String>>,
         collected_piece_tx: Sender<CollectedPiece>,
         collected_piece_timeout: Duration,
@@ -155,6 +168,7 @@ impl PieceCollector {
                 parent: CollectedParent,
                 parents: Vec<CollectedParent>,
                 interested_pieces: Vec<metadata::Piece>,
+                collected_parents: Arc<DashMap<u32, Vec<CollectedParent>>>,
                 collected_pieces: Arc<DashMap<u32, String>>,
                 collected_piece_tx: Sender<CollectedPiece>,
                 collected_piece_timeout: Duration,
@@ -220,6 +234,16 @@ impl PieceCollector {
                             Error::InvalidPeer(parent_id.clone())
                         })?;
 
+                    // Push parent to collected_parents.
+                    match collected_parents.try_get_mut(&message.number).try_unwrap() {
+                        Some(mut parents) => {
+                            parents.push(parent.clone());
+                        }
+                        None => {
+                            collected_parents.insert(message.number, parents.clone());
+                        }
+                    };
+
                     collected_piece_tx
                         .send(CollectedPiece {
                             number: message.number,
@@ -233,9 +257,6 @@ impl PieceCollector {
 
                     // Release the lock of the piece with parent_id.
                     drop(parent_id);
-
-                    // Remove the piece from collected_pieces.
-                    collected_pieces.remove(&message.number);
                 }
 
                 Ok(parent)
@@ -249,6 +270,7 @@ impl PieceCollector {
                     parent.clone(),
                     parents.clone(),
                     interested_pieces.clone(),
+                    collected_parents.clone(),
                     collected_pieces.clone(),
                     collected_piece_tx.clone(),
                     collected_piece_timeout,
@@ -279,6 +301,26 @@ impl PieceCollector {
         }
 
         Ok(())
+    }
+
+    pub fn select_parent(&self, piece_number: u32) -> Result<CollectedParent> {
+        let collected_pieces = self.collected_pieces.clone();
+        let collected_parents = self.collected_parents.clone();
+        let parent_selector = self.parent_selector.clone();
+        // Remove the piece from collected_pieces.
+        collected_pieces.remove(&piece_number);
+
+        let res = match collected_parents.get(&piece_number) {
+            None => {
+                error!("no parent for piece {:?}", piece_number);
+                Err(Error::Unknown(format!(
+                    "no parent for piece {:?}",
+                    piece_number
+                )))
+            }
+            Some(parents) => parent_selector.optimal_parent(parents.value()),
+        };
+        res
     }
 }
 
