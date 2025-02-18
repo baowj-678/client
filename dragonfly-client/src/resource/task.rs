@@ -19,6 +19,7 @@ use crate::metrics::{
     collect_backend_request_failure_metrics, collect_backend_request_finished_metrics,
     collect_backend_request_started_metrics,
 };
+use crate::resource::parent_selector::ParentSelector;
 use dragonfly_api::common::v2::{
     Download, Hdfs, ObjectStorage, Peer, Piece, Task as CommonTask, TrafficType,
 };
@@ -85,6 +86,9 @@ pub struct Task {
 
     /// piece is the piece manager.
     pub piece: Arc<piece::Piece>,
+
+    /// parent_selector is the parent selector.
+    pub parent_selector: Arc<ParentSelector>,
 }
 
 /// Task implements the task manager.
@@ -97,6 +101,7 @@ impl Task {
         storage: Arc<Storage>,
         scheduler_client: Arc<SchedulerClient>,
         backend_factory: Arc<BackendFactory>,
+        parent_selector: Arc<ParentSelector>,
     ) -> ClientResult<Self> {
         let piece = piece::Piece::new(
             config.clone(),
@@ -113,6 +118,7 @@ impl Task {
             scheduler_client: scheduler_client.clone(),
             backend_factory: backend_factory.clone(),
             piece: piece.clone(),
+            parent_selector: parent_selector.clone(),
         })
     }
 
@@ -945,6 +951,7 @@ impl Task {
                     host: peer.host,
                 })
                 .collect(),
+            self.parent_selector.clone(),
         );
         let mut piece_collector_rx = piece_collector.run().await;
 
@@ -1122,25 +1129,51 @@ impl Task {
                 Ok(metadata)
             }
 
-            join_set.spawn(
-                download_from_parent(
-                    task_id.to_string(),
-                    host_id.to_string(),
-                    peer_id.to_string(),
-                    collect_piece.number,
-                    collect_piece.length,
-                    collect_piece.parent.clone(),
-                    self.piece.clone(),
-                    semaphore.clone(),
-                    download_progress_tx.clone(),
-                    in_stream_tx.clone(),
-                    interrupt.clone(),
-                    finished_pieces.clone(),
-                    is_prefetch,
-                    need_piece_content,
-                )
-                .in_current_span(),
-            );
+            match piece_collector.select_parent(collect_piece.number) {
+                Ok(parent) => {
+                    join_set.spawn(
+                        download_from_parent(
+                            task_id.to_string(),
+                            host_id.to_string(),
+                            peer_id.to_string(),
+                            collect_piece.number,
+                            collect_piece.length,
+                            parent.clone(),
+                            self.piece.clone(),
+                            semaphore.clone(),
+                            download_progress_tx.clone(),
+                            in_stream_tx.clone(),
+                            interrupt.clone(),
+                            finished_pieces.clone(),
+                            is_prefetch,
+                            need_piece_content,
+                        )
+                        .in_current_span(),
+                    );
+                }
+                Err(_) => {
+                    // Failed to get optimal parent, use default.
+                    join_set.spawn(
+                        download_from_parent(
+                            task_id.to_string(),
+                            host_id.to_string(),
+                            peer_id.to_string(),
+                            collect_piece.number,
+                            collect_piece.length,
+                            collect_piece.parent.clone(),
+                            self.piece.clone(),
+                            semaphore.clone(),
+                            download_progress_tx.clone(),
+                            in_stream_tx.clone(),
+                            interrupt.clone(),
+                            finished_pieces.clone(),
+                            is_prefetch,
+                            need_piece_content,
+                        )
+                        .in_current_span(),
+                    );
+                }
+            }
         }
 
         // Wait for the pieces to be downloaded.
