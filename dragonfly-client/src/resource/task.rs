@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+use super::*;
 use crate::grpc::{scheduler::SchedulerClient, REQUEST_TIMEOUT};
 use crate::metrics::{
     collect_backend_request_failure_metrics, collect_backend_request_finished_metrics,
@@ -58,14 +59,12 @@ use std::time::Instant;
 use tokio::io::AsyncReadExt;
 use tokio::sync::{
     mpsc::{self, Sender},
-    Semaphore,
+    OwnedSemaphorePermit, Semaphore,
 };
 use tokio::task::JoinSet;
 use tokio_stream::{wrappers::ReceiverStream, StreamExt};
 use tonic::{Request, Status};
 use tracing::{debug, error, info, instrument, Instrument};
-
-use super::*;
 
 /// Task represents a task manager.
 pub struct Task {
@@ -985,7 +984,7 @@ impl Task {
                 length: u64,
                 parent: piece_collector::CollectedParent,
                 piece_manager: Arc<piece::Piece>,
-                semaphore: Arc<Semaphore>,
+                permit: Arc<OwnedSemaphorePermit>,
                 download_progress_tx: Sender<Result<DownloadTaskResponse, Status>>,
                 in_stream_tx: Sender<AnnouncePeerRequest>,
                 interrupt: Arc<AtomicBool>,
@@ -993,9 +992,6 @@ impl Task {
                 is_prefetch: bool,
                 need_piece_content: bool,
             ) -> ClientResult<metadata::Piece> {
-                // Limit the concurrent piece count.
-                let _permit = semaphore.acquire().await.unwrap();
-
                 let piece_id = piece_manager.id(task_id.as_str(), number);
                 info!(
                     "start to download piece {} from parent {:?}",
@@ -1126,54 +1122,39 @@ impl Task {
                 let mut finished_pieces = finished_pieces.lock().unwrap();
                 finished_pieces.push(metadata.clone());
 
+                drop(permit);
                 Ok(metadata)
             }
 
-            match piece_collector.select_parent(collect_piece.number) {
-                Ok(parent) => {
-                    join_set.spawn(
-                        download_from_parent(
-                            task_id.to_string(),
-                            host_id.to_string(),
-                            peer_id.to_string(),
-                            collect_piece.number,
-                            collect_piece.length,
-                            parent.clone(),
-                            self.piece.clone(),
-                            semaphore.clone(),
-                            download_progress_tx.clone(),
-                            in_stream_tx.clone(),
-                            interrupt.clone(),
-                            finished_pieces.clone(),
-                            is_prefetch,
-                            need_piece_content,
-                        )
-                        .in_current_span(),
-                    );
-                }
-                Err(_) => {
-                    // Failed to get optimal parent, use default.
-                    join_set.spawn(
-                        download_from_parent(
-                            task_id.to_string(),
-                            host_id.to_string(),
-                            peer_id.to_string(),
-                            collect_piece.number,
-                            collect_piece.length,
-                            collect_piece.parent.clone(),
-                            self.piece.clone(),
-                            semaphore.clone(),
-                            download_progress_tx.clone(),
-                            in_stream_tx.clone(),
-                            interrupt.clone(),
-                            finished_pieces.clone(),
-                            is_prefetch,
-                            need_piece_content,
-                        )
-                        .in_current_span(),
-                    );
-                }
+            // Get optimal parent for this piece.
+            let mut parent = collect_piece.parent.clone();
+            if self.config.download.parent_selector.enable {
+                parent = match piece_collector.select_parent(collect_piece.number) {
+                    Ok(parent) => parent,
+                    Err(_) => collect_piece.parent.clone(),
+                };
             }
+            let permit = semaphore.clone().acquire_owned().await.unwrap();
+
+            join_set.spawn(
+                download_from_parent(
+                    task_id.to_string(),
+                    host_id.to_string(),
+                    peer_id.to_string(),
+                    collect_piece.number,
+                    collect_piece.length,
+                    parent.clone(),
+                    self.piece.clone(),
+                    permit.into(),
+                    download_progress_tx.clone(),
+                    in_stream_tx.clone(),
+                    interrupt.clone(),
+                    finished_pieces.clone(),
+                    is_prefetch,
+                    need_piece_content,
+                )
+                .in_current_span(),
+            );
         }
 
         // Wait for the pieces to be downloaded.

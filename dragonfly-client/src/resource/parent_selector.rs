@@ -13,14 +13,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 use crate::grpc::dfdaemon_upload::DfdaemonUploadClient;
 use crate::resource::piece_collector::CollectedParent;
 use crate::shutdown::Shutdown;
-use bytesize::ByteSize;
 use dashmap::DashMap;
-use dragonfly_api::common::v2::Host;
+use dragonfly_api::common::v2::{Host, Network};
 use dragonfly_api::dfdaemon::v2::SyncHostRequest;
+use dragonfly_client_config::dfdaemon;
 use dragonfly_client_config::dfdaemon::Config;
 use dragonfly_client_core::error::{ErrorType, OrErr};
 use dragonfly_client_core::Error;
@@ -29,15 +28,13 @@ use dragonfly_client_util::id_generator::IDGenerator;
 use lru::LruCache;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
+use std::net::IpAddr;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio_stream::StreamExt;
 use tracing::{debug, error, info, instrument, Instrument};
 use validator::HasLen;
-
-#[allow(dead_code)]
-const DEFAULT_AVAILABLE_CAPACITY: f64 = ByteSize::mb(10000 / 8).as_u64() as f64;
 
 #[allow(dead_code)]
 const DEFAULT_SYNC_HOST_TIMEOUT: u32 = 5;
@@ -96,16 +93,18 @@ impl ParentSelector {
 
     /// register_parents registers task and it's parents.
     #[instrument(skip_all)]
-    pub fn register_parents(&self, add_parents: &Vec<CollectedParent>) {
+    pub fn register_parents(&self, add_parents: &Vec<CollectedParent>) -> Result<()> {
         // If not enable.
         if !self.config.download.parent_selector.enable {
-            return;
+            return Ok(());
         }
 
         // No parents, skip.
         if add_parents.length() == 0 {
             info!("register failed, parents length = 0");
-            return;
+            return Err(Error::Unknown(
+                "register failed, parents length = 0".to_string(),
+            ));
         }
 
         // Get LRU cache.
@@ -161,6 +160,7 @@ impl ParentSelector {
                 );
             }
         }
+        Ok(())
     }
 
     /// sync_host is a sub thread to sync host info from the parent.
@@ -237,31 +237,39 @@ impl ParentSelector {
     pub fn optimal_parent(&self, parents: &[CollectedParent]) -> Result<CollectedParent> {
         // No parents, error.
         if parents.is_empty() {
-            error!("no parents");
-            return Err(Error::Unknown("no parents".to_string()));
+            error!("parents' length is 0");
+            return Err(Error::Unknown("parents' length is 0".to_string()));
         }
 
         let mut probability = Vec::with_capacity(parents.len());
         let hosts_info = self.hosts_info.clone();
+        let cache = self.cache.clone();
+
         let mut sum: f64 = 0f64;
 
         // Update parent host available capacity.
+        let mut cache = cache.lock().unwrap();
         parents
             .iter()
             .for_each(|parent| match hosts_info.get(&parent.id) {
                 None => {
+                    cache.promote(&parent.id);
                     probability.push(0f64);
                 }
-                Some(host) => match Self::available_capacity(host.value()) {
-                    Ok(capacity) => {
-                        probability.push(capacity);
-                        sum += capacity;
+                Some(host) => {
+                    cache.promote(&parent.id);
+                    match Self::available_capacity(host.value()) {
+                        Ok(capacity) => {
+                            probability.push(capacity);
+                            sum += capacity;
+                        }
+                        Err(_) => {
+                            probability.push(0f64);
+                        }
                     }
-                    Err(_) => {
-                        probability.push(0f64);
-                    }
-                },
+                }
             });
+        drop(cache);
 
         // Update probability.
         probability.iter_mut().for_each(|p| {
@@ -296,8 +304,247 @@ impl ParentSelector {
     /// available_capacity return the available capacity of the host.
     fn available_capacity(host: &Host) -> Result<f64> {
         match host.network.clone() {
-            None => Ok(DEFAULT_AVAILABLE_CAPACITY),
+            None => Ok(0f64),
             Some(network) => Ok(network.upload_rate as f64),
         }
     }
+}
+
+#[tokio::test]
+async fn test_register_parents() {
+    let mut config = Config::default();
+    config.download.parent_selector = dfdaemon::ParentSelector {
+        enable: false,
+        sync_interval: Duration::from_millis(500),
+        capacity: 20,
+    };
+    config.host.ip = Some(IpAddr::V4("127.0.0.1".parse().unwrap()));
+    config.host.hostname = "localhost".to_string();
+
+    let id_generator = IDGenerator::new(
+        config.host.ip.unwrap().to_string(),
+        config.host.hostname.clone(),
+        config.seed_peer.enable,
+    );
+    let id_generator = Arc::new(id_generator);
+
+    // Test normal case.
+    config.download.parent_selector.enable = true;
+    let test_config = Arc::new(config.clone());
+    let parent_selector = ParentSelector::new(test_config.clone(), id_generator.clone());
+    let parents = vec![
+        CollectedParent {
+            id: "1".to_string(),
+            host: None,
+        },
+        CollectedParent {
+            id: "2".to_string(),
+            host: None,
+        },
+        CollectedParent {
+            id: "3".to_string(),
+            host: None,
+        },
+    ];
+    let result = parent_selector.register_parents(&parents);
+
+    assert!(result.is_ok());
+    assert_eq!(parent_selector.cache.clone().lock().unwrap().len(), 3);
+
+    // Test disable case.
+    config.download.parent_selector.enable = false;
+    let test_config = Arc::new(config.clone());
+    let parent_selector = ParentSelector::new(test_config.clone(), id_generator.clone());
+    let parents = vec![CollectedParent {
+        id: "".to_string(),
+        host: None,
+    }];
+    let result = parent_selector.register_parents(&parents);
+
+    assert!(result.is_ok());
+    assert_eq!(parent_selector.cache.clone().lock().unwrap().len(), 0);
+
+    // Test empty parents case.
+    config.download.parent_selector.enable = true;
+    let test_config = Arc::new(config.clone());
+    let parent_selector = ParentSelector::new(test_config.clone(), id_generator.clone());
+    let parents = vec![];
+    let result = parent_selector.register_parents(&parents);
+
+    assert!(result.is_err());
+    assert_eq!(parent_selector.cache.clone().lock().unwrap().len(), 0);
+
+    // Test cache overflow case.
+    config.download.parent_selector.enable = true;
+    config.download.parent_selector.capacity = 3;
+    let test_config = Arc::new(config.clone());
+    let parent_selector = ParentSelector::new(test_config.clone(), id_generator.clone());
+    let parents = vec![
+        CollectedParent {
+            id: "1".to_string(),
+            host: None,
+        },
+        CollectedParent {
+            id: "2".to_string(),
+            host: None,
+        },
+    ];
+    let result = parent_selector.register_parents(&parents);
+
+    assert!(result.is_ok());
+    assert_eq!(parent_selector.cache.clone().lock().unwrap().len(), 2);
+
+    let parents = vec![
+        CollectedParent {
+            id: "3".to_string(),
+            host: None,
+        },
+        CollectedParent {
+            id: "4".to_string(),
+            host: None,
+        },
+    ];
+    let result = parent_selector.register_parents(&parents);
+
+    assert!(result.is_ok());
+    assert_eq!(parent_selector.cache.clone().lock().unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn test_optimal_parent() {
+    let mut config = Config::default();
+    config.download.parent_selector = dfdaemon::ParentSelector {
+        enable: false,
+        sync_interval: Duration::from_millis(500),
+        capacity: 20,
+    };
+    config.host.ip = Some(IpAddr::V4("127.0.0.1".parse().unwrap()));
+    config.host.hostname = "localhost".to_string();
+
+    let id_generator = IDGenerator::new(
+        config.host.ip.unwrap().to_string(),
+        config.host.hostname.clone(),
+        config.seed_peer.enable,
+    );
+    let id_generator = Arc::new(id_generator);
+
+    // Test normal case.
+    config.download.parent_selector.enable = true;
+    let test_config = Arc::new(config.clone());
+    let mut parent_selector = ParentSelector::new(test_config.clone(), id_generator.clone());
+    let hosts_info = DashMap::new();
+    hosts_info.insert(
+        "1".to_string(),
+        Host {
+            network: Some(Network {
+                upload_rate: 100,
+                ..Network::default()
+            }),
+            ..Host::default()
+        },
+    );
+    hosts_info.insert(
+        "2".to_string(),
+        Host {
+            network: Some(Network {
+                upload_rate: 0,
+                ..Network::default()
+            }),
+            ..Host::default()
+        },
+    );
+    hosts_info.insert(
+        "3".to_string(),
+        Host {
+            network: Some(Network {
+                upload_rate: 0,
+                ..Network::default()
+            }),
+            ..Host::default()
+        },
+    );
+    parent_selector.hosts_info = Arc::new(hosts_info);
+    let parents = vec![
+        CollectedParent {
+            id: "1".to_string(),
+            host: None,
+        },
+        CollectedParent {
+            id: "2".to_string(),
+            host: None,
+        },
+        CollectedParent {
+            id: "3".to_string(),
+            host: None,
+        },
+    ];
+    let result = parent_selector.optimal_parent(&parents);
+
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap().id, "1");
+
+    // Test parents length is 0 case.
+    config.download.parent_selector.enable = true;
+    let test_config = Arc::new(config.clone());
+    let parent_selector = ParentSelector::new(test_config.clone(), id_generator.clone());
+    let parents = vec![];
+    let result = parent_selector.optimal_parent(&parents);
+
+    assert!(result.is_err());
+
+    // Test parent is not in cache case.
+    config.download.parent_selector.enable = true;
+    let test_config = Arc::new(config.clone());
+    let mut parent_selector = ParentSelector::new(test_config.clone(), id_generator.clone());
+    let hosts_info = DashMap::new();
+    hosts_info.insert(
+        "1".to_string(),
+        Host {
+            network: Some(Network {
+                upload_rate: 100,
+                ..Network::default()
+            }),
+            ..Host::default()
+        },
+    );
+    parent_selector.hosts_info = Arc::new(hosts_info);
+    let parents = vec![
+        CollectedParent {
+            id: "1".to_string(),
+            host: None,
+        },
+        CollectedParent {
+            id: "2".to_string(),
+            host: None,
+        },
+        CollectedParent {
+            id: "3".to_string(),
+            host: None,
+        },
+    ];
+    let result = parent_selector.optimal_parent(&parents);
+
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap().id, "1");
+}
+
+#[tokio::test]
+async fn test_available_capacity() {
+    // Test network is None case.
+    let host = Host::default();
+    let capacity = ParentSelector::available_capacity(&host);
+
+    assert!(capacity.is_ok());
+    assert_eq!(capacity.unwrap(), 0f64);
+
+    // Test normal case.
+    let mut host = Host::default();
+    host.network = Some(Network {
+        upload_rate: 5000,
+        ..Default::default()
+    });
+    let capacity = ParentSelector::available_capacity(&host.clone());
+
+    assert!(capacity.is_ok());
+    assert_eq!(capacity.unwrap(), 5000f64);
 }

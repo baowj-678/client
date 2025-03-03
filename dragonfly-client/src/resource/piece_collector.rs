@@ -94,6 +94,7 @@ impl PieceCollector {
         for interested_piece in &interested_pieces {
             collected_pieces.insert(interested_piece.number, String::new());
         }
+        let _ = parent_selector.register_parents(&parents);
 
         Self {
             config,
