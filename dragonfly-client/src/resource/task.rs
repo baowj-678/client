@@ -1129,9 +1129,9 @@ impl Task {
             // Get optimal parent for this piece.
             let mut parent = collect_piece.parent.clone();
             if self.config.download.parent_selector.enable {
-                parent = match piece_collector.select_parent(collect_piece.number) {
-                    Ok(parent) => parent,
-                    Err(_) => collect_piece.parent.clone(),
+                if let Ok(optimal_parent) = piece_collector.select_parent(collect_piece.number) {
+                    parent = optimal_parent;
+                    info!("update optimal parent to {}", parent.id.clone());
                 };
             }
             let permit = semaphore.clone().acquire_owned().await.unwrap();
