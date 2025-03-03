@@ -955,7 +955,7 @@ impl DfdaemonUpload for DfdaemonUploadServerHandler {
 
             // Get speed of this interface.
             if let Some(interface) = request_interface.clone() {
-                let speed_path = format!("/sys/class/net/{}/speed", interface);
+                let speed_path = format!("/net/{}/speed", interface);
                 let content = fs::read_to_string(speed_path).unwrap_or_default();
                 if let Ok(speed) = content.trim().parse::<u64>() {
                     // Convert bits/sec to bytes/sec.
